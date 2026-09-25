@@ -54,7 +54,7 @@ type ProviderModelConfigWithVariants = ProviderModelConfig & {
   variants?: Record<string, Record<string, unknown>>;
 };
 
-interface ProviderProjection {
+export interface ProviderProjection {
   models: Record<string, ProviderModelConfigWithVariants>;
   routes: Map<string, AcpModelSelection>;
 }
@@ -512,7 +512,7 @@ export function buildProviderModels(
   return buildProviderProjection(serverId, server, catalogue).models;
 }
 
-function buildProviderProjection(
+export function buildProviderProjection(
   serverId: string,
   server: ServerConfig,
   catalogue?: CatalogueResult,

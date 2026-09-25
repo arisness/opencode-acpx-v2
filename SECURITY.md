@@ -1,10 +1,10 @@
 # Security policy
 
 Security fixes are supported for the latest published version of
-`opencode-acpx`.
+`opencode-acpx-v2`.
 
 Please report suspected vulnerabilities using
-[GitHub private vulnerability reporting](https://github.com/intellectronica/opencode-acpx/security/advisories/new).
+[GitHub private vulnerability reporting](https://github.com/adolfo199/opencode-acpx-v2/security/advisories/new).
 Include the plugin, OpenCode and ACP-agent versions and a minimal, redacted
 reproduction. Do not include credentials, raw environment values or unredacted
 protocol traces in an issue.

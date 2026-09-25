@@ -110,11 +110,12 @@ function readModelSelection(value: unknown): {
   ) {
     throw new Error("ACP selected modelId must be a non-empty string");
   }
-  if (!isObject(value.config)) {
+  const rawConfig = value.config ?? {};
+  if (!isObject(rawConfig)) {
     throw new Error("ACP model-selection config must be an object");
   }
   const config: Record<string, AcpConfigValue> = {};
-  for (const [id, configured] of Object.entries(value.config)) {
+  for (const [id, configured] of Object.entries(rawConfig)) {
     if (id.length === 0 || id.length > 512) {
       throw new Error("ACP config option IDs must contain 1 to 512 characters");
     }

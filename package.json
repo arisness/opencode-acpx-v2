@@ -1,10 +1,10 @@
 {
-  "name": "opencode-acpx",
-  "version": "0.0.1",
-  "description": "Use Cursor, Claude, Codex, Grok, Hermes and other ACP agents as OpenCode providers",
+  "name": "opencode-acpx-v2",
+  "version": "0.1.0",
+  "description": "Use Cursor and other ACP agents as OpenCode 2 providers",
   "type": "module",
   "license": "MIT",
-  "author": "Intellectronica",
+  "author": "Intellectronica and contributors",
   "keywords": [
     "opencode",
     "acp",
@@ -18,18 +18,18 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/intellectronica/opencode-acpx.git"
+    "url": "git+https://github.com/adolfo199/opencode-acpx-v2.git"
   },
   "bugs": {
-    "url": "https://github.com/intellectronica/opencode-acpx/issues"
+    "url": "https://github.com/adolfo199/opencode-acpx-v2/issues"
   },
-  "homepage": "https://github.com/intellectronica/opencode-acpx#readme",
+  "homepage": "https://github.com/adolfo199/opencode-acpx-v2#readme",
   "publishConfig": {
     "access": "public"
   },
   "engines": {
     "node": ">=22.13.0",
-    "opencode": ">=1.18.15 <2"
+    "opencode": ">=1.18.15"
   },
   "packageManager": "pnpm@11.19.0",
   "exports": {
@@ -41,6 +41,10 @@
       "types": "./dist/server.d.ts",
       "import": "./dist/server.js",
       "config": {}
+    },
+    "./plugin/opencode2": {
+      "types": "./dist/plugin-opencode2.d.ts",
+      "import": "./dist/plugin-opencode2.js"
     },
     "./tui": {
       "types": "./dist/tui.d.ts",

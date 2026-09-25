@@ -83,7 +83,7 @@ for protocol frames.
 ## Reporting
 
 Use
-[GitHub private vulnerability reporting](https://github.com/intellectronica/opencode-acpx/security/advisories/new)
+[GitHub private vulnerability reporting](https://github.com/adolfo199/opencode-acpx-v2/security/advisories/new)
 and include the plugin version, OpenCode version, preset, agent version and a
 redacted reproduction. Do not attach unredacted traces or credentials to an
 issue.

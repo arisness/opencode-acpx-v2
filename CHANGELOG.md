@@ -5,6 +5,22 @@ Keep a Changelog and the package uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-25
+
+### Added
+
+- OpenCode 2 entrypoint using `setup()`, `ctx.provider.transform` and AI SDK
+  hooks.
+- In-memory ACP provider and model registration for Cursor Agent.
+- Isolated OpenCode 2 configuration with deny-by-default permissions and an
+  explicit trusted-agent opt-in.
+- OpenCode 2 unit coverage and real end-to-end Cursor ACP smoke tests.
+
+### Fixed
+
+- Preserve factory routing metadata in OpenCode 2 model settings.
+- Accept host-normalised empty model configuration during request routing.
+
 ## [0.0.1] - 2026-08-15
 
 ### Added
@@ -39,5 +55,6 @@ Keep a Changelog and the package uses Semantic Versioning.
 - Correlate session-less task notifications and suppress redundant
   informational tool cards after native projection.
 
-[Unreleased]: https://github.com/intellectronica/opencode-acpx/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/adolfo199/opencode-acpx-v2/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/adolfo199/opencode-acpx-v2/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/intellectronica/opencode-acpx/releases/tag/v0.0.1

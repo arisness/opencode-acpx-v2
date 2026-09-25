@@ -57,9 +57,10 @@ const smokeFile = join(sandbox, "smoke.mjs");
 await writeFile(
   smokeFile,
   `
-    import * as providerModule from "opencode-acpx";
-    import server from "opencode-acpx/server";
-    import tui from "opencode-acpx/tui";
+    import * as providerModule from "${manifest.name}";
+    import server from "${manifest.name}/server";
+    import openCode2 from "${manifest.name}/plugin/opencode2";
+    import tui from "${manifest.name}/tui";
 
     const factories = Object.keys(providerModule).filter((name) => name.startsWith("create"));
     if (factories.length !== 1) throw new Error("Expected one provider factory");
@@ -74,6 +75,9 @@ await writeFile(
     }
     if (server?.id !== "opencode-acpx" || typeof server?.server !== "function") {
       throw new Error("Invalid server export");
+    }
+    if (openCode2?.id !== "opencode-acpx-v2" || typeof openCode2?.setup !== "function") {
+      throw new Error("Invalid OpenCode 2 export");
     }
     if (tui?.id !== "opencode-acpx" || typeof tui?.tui !== "function") {
       throw new Error("Invalid TUI export");

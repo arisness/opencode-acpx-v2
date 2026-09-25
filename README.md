@@ -1,17 +1,25 @@
-# opencode-acpx
+# opencode-acpx-v2
 
-[![npm](https://img.shields.io/npm/v/opencode-acpx)](https://www.npmjs.com/package/opencode-acpx)
-[![CI](https://github.com/intellectronica/opencode-acpx/actions/workflows/ci.yml/badge.svg)](https://github.com/intellectronica/opencode-acpx/actions/workflows/ci.yml)
+[![CI](https://github.com/adolfo199/opencode-acpx-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/adolfo199/opencode-acpx-v2/actions/workflows/ci.yml)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Use ACP agents as first-class [OpenCode](https://opencode.ai) providers.
-`opencode-acpx` discovers each agent's models, preserves its stateful session,
-and streams reasoning, tools, plans, todos and subagent activity through
-OpenCode. Model-specific reasoning effort and fast-mode controls appear as
-normal OpenCode variants.
+An experimental OpenCode 2 port of
+[`intellectronica/opencode-acpx`](https://github.com/intellectronica/opencode-acpx).
+It exposes Cursor and other ACP agents as first-class OpenCode providers while
+keeping the ACP process and its credentials outside the repository.
 
-The plugin is built on [Acpx](https://github.com/openclaw/acpx) and requires no
-changes to OpenCode or the ACP agent.
+This fork adds the OpenCode 2 `setup()` surface, in-memory provider
+registration through `ctx.provider.transform`, and AI SDK hooks. The original
+OpenCode 1 entrypoints remain available.
+
+## OpenCode 2 status
+
+The OpenCode 2 path currently supports model discovery, provider registration,
+stateful ACP sessions, text/reasoning streaming, and ACP-owned activity. The
+2.0 public plugin API does not currently expose the same permission-prompt
+context as OpenCode 1, so permissions fail closed by default. Set
+`OPENCODE_ACPX_V2_PERMISSIONS=allow` only when you trust the ACP agent and want
+it to perform tool actions.
 
 ## Supported agents
 
@@ -26,40 +34,55 @@ changes to OpenCode or the ACP agent.
 
 ## Requirements
 
-- OpenCode `>=1.18.15 <2`
+- OpenCode `2.0.0` or newer for the new entrypoint
 - Node.js `>=22.13`
-- Any system agent you enable, already installed and authenticated
+- Cursor Agent installed and already authenticated (`agent acp` must start)
 
-Claude Agent ACP and Codex ACP are installed with the plugin. Cursor, Grok and
-Hermes are not installed or updated automatically.
+## Install on OpenCode 2
 
-## Install
+Until the package is published, clone and build it:
 
-Add the plugin and at least one server to `opencode.json`:
-
-```jsonc
-{
-  "plugin": [
-    [
-      "opencode-acpx",
-      {
-        "servers": {
-          "cursor": {
-            "preset": "cursor",
-          },
-        },
-      },
-    ],
-  ],
-}
+```sh
+git clone https://github.com/adolfo199/opencode-acpx-v2.git
+cd opencode-acpx-v2
+pnpm install --frozen-lockfile
+pnpm build
 ```
 
-Restart OpenCode, open the model picker, and select a model under
-**Cursor (ACP)**. The provider ID is `acp.cursor`; other server IDs follow the
-same `acp.<server-id>` pattern.
+Create a local plugin package under an isolated OpenCode configuration:
 
-OpenCode installs npm plugins automatically. To pin this release, use
-`"opencode-acpx@0.0.1"` in the plugin entry.
+```sh
+export OPENCODE_CONFIG_DIR="$HOME/.config/opencode-acpx-v2"
+mkdir -p "$OPENCODE_CONFIG_DIR/plugins/acpx-v2"
+printf '%s\n' '{"name":"acpx-v2-local","type":"module","main":"./index.js"}' > "$OPENCODE_CONFIG_DIR/plugins/acpx-v2/package.json"
+printf 'export { default } from %s;\n' "$(node -e 'console.log(JSON.stringify(process.argv[1]))' "$PWD/dist/plugin-opencode2.js")" > "$OPENCODE_CONFIG_DIR/plugins/acpx-v2/index.js"
+printf '%s\n' '{"$schema":"https://opencode.ai/config.json","plugin":["./plugins/acpx-v2"]}' > "$OPENCODE_CONFIG_DIR/opencode.json"
+```
+
+Start OpenCode:
+
+```sh
+OPENCODE_CONFIG_DIR="$HOME/.config/opencode-acpx-v2" opencode
+```
+
+Cursor is not an OpenCode credential integration in this fork, so it does not
+appear under `/connect`. Authentication is owned by Cursor Agent itself. Models
+appear under provider **Cursor (ACP)** after `agent acp` discovery succeeds.
+
+Tool permissions are denied by default. To enable trusted Cursor tool actions:
+
+```sh
+OPENCODE_ACPX_V2_PERMISSIONS=allow \
+OPENCODE_CONFIG_DIR="$HOME/.config/opencode-acpx-v2" opencode
+```
+
+No Cursor token, API key, authentication file, or full environment is copied or
+forwarded by the default configuration.
+
+## OpenCode 1 compatibility
+
+The original `./server` entrypoint and configuration format are retained for
+OpenCode 1 users. See [configuration](docs/configuration.md).
 
 ## Configure
 

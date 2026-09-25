@@ -6,10 +6,10 @@ const root = process.cwd();
 const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const constantsSource = await readFile(join(root, "src/constants.ts"), "utf8");
 
-if (manifest.name !== "opencode-acpx") {
+if (manifest.name !== "opencode-acpx-v2") {
   throw new Error(`Unexpected package name: ${String(manifest.name)}`);
 }
-if (manifest.version !== "0.0.1") {
+if (manifest.version !== "0.1.0") {
   throw new Error(`Unexpected release version: ${String(manifest.version)}`);
 }
 if (manifest.private === true || manifest.license !== "MIT") {
@@ -26,6 +26,9 @@ if (manifest.dependencies?.acpx !== undefined) {
 }
 const rootModule = await import(pathToFileURL(join(root, "dist/provider.js")));
 const serverModule = await import(pathToFileURL(join(root, "dist/server.js")));
+const openCode2Module = await import(
+  pathToFileURL(join(root, "dist/plugin-opencode2.js"))
+);
 const tuiModule = await import(pathToFileURL(join(root, "dist/tui.js")));
 
 const factories = Object.keys(rootModule).filter((name) =>
@@ -61,6 +64,12 @@ if (
   throw new Error("The ./server export must default-export { id, server }");
 }
 if (
+  openCode2Module.default?.id !== "opencode-acpx-v2" ||
+  typeof openCode2Module.default?.setup !== "function"
+) {
+  throw new Error("The OpenCode 2 export must default-export { id, setup }");
+}
+if (
   typeof tuiModule.default !== "object" ||
   tuiModule.default?.id !== "opencode-acpx" ||
   typeof tuiModule.default?.tui !== "function"
@@ -72,6 +81,9 @@ await access(join(root, "dist/worker.js"));
 await access(join(root, "LICENSE"));
 if (manifest.exports?.["./server"] === undefined) {
   throw new Error("package.json must export ./server");
+}
+if (manifest.exports?.["./plugin/opencode2"] === undefined) {
+  throw new Error("package.json must export ./plugin/opencode2");
 }
 if (manifest.exports?.["./tui"] === undefined) {
   throw new Error("package.json must export ./tui");

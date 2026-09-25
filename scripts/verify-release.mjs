@@ -9,10 +9,10 @@ const actualTag =
   process.argv.slice(2).find((argument) => argument !== "--") ??
   process.env.GITHUB_REF_NAME;
 
-if (manifest.name !== "opencode-acpx") {
+if (manifest.name !== "opencode-acpx-v2") {
   throw new Error(`Unexpected package name: ${String(manifest.name)}`);
 }
-if (manifest.version !== "0.0.1") {
+if (manifest.version !== "0.1.0") {
   throw new Error(`Unexpected release version: ${String(manifest.version)}`);
 }
 if (manifest.private === true || manifest.license !== "MIT") {

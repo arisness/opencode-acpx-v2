@@ -63,6 +63,27 @@ describe("ACP input translation", () => {
     ).toThrow(/full provider ID/);
   });
 
+  it("treats an omitted empty model config as an empty object", () => {
+    const options = call({
+      providerOptions: {
+        "acp.cursor": {
+          openCodeSessionId: "session-1",
+          requestId: "message-1",
+          opencodeAcpx: {
+            schema: 1,
+            variantId: null,
+            modelId: "cursor",
+          },
+        },
+      },
+    });
+
+    expect(readCallRouting(options, "acp.cursor").selection).toEqual({
+      modelId: "cursor",
+      config: {},
+    });
+  });
+
   it("uses only the latest user message and converts binary attachments", () => {
     const prompt = readLatestUserPrompt([
       { role: "user", content: [{ type: "text", text: "old" }] },

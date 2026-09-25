@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     provider: "src/provider.ts",
     server: "src/server.ts",
+    "plugin-opencode2": "src/plugin-opencode2.ts",
     tui: "src/tui.ts",
     worker: "src/worker/main.ts",
   },
