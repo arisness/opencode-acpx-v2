@@ -10,10 +10,17 @@ import type {
 import type { PluginOptions } from "../config.js";
 import type { AcpConfigValue } from "../model-variants.js";
 
+export interface WorkerHostCapabilities {
+  permissionPrompt?: boolean;
+  questionPrompt?: boolean;
+  directNonInteractivePermissions?: boolean;
+}
+
 export interface ConfigureParams {
   pluginInstanceId: string;
   directory: string;
   options: PluginOptions;
+  hostCapabilities?: WorkerHostCapabilities;
 }
 
 export interface CatalogueParams {

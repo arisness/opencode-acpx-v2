@@ -361,7 +361,7 @@ async function resolveTurn(
     turnId,
     serverId: runtime.serverId,
     sessionKey,
-    cwd: runtime.server.cwd ?? runtime.directory,
+    cwd: runtime.directory,
     requestId: routing.requestId,
     text: prompt.text,
     ...(routing.selection.modelId === undefined

@@ -36,7 +36,9 @@ export interface ProviderRuntime {
   client: ProviderWorkerClient;
   serverId: string;
   server: ServerConfig;
+  /** Resolved server working directory (`serverWorkingDirectory`). */
   directory: string;
+  /** Resolved worktree root used for ACP session identity (`serverWorkingDirectory`). */
   worktree: string;
   /** Optional durable binding ledger supplied by the plugin host. */
   ledger?: BindingLedger;

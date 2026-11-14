@@ -1,16 +1,30 @@
 import type { AcpPermissionDecision } from "acpx/runtime";
-import type { ToolContext, ToolResult } from "@opencode-ai/plugin";
+import type { ToolContext } from "@opencode-ai/plugin";
 
 import type { PermissionInteraction } from "../worker/messages.js";
 import {
-  isPermissionAskedEvent,
-  isPermissionRepliedEvent,
   isSessionDeletedEvent,
+  readPermissionAskedEvent,
+  readPermissionRepliedEvent,
   sessionDeletedId,
 } from "./events.js";
 
-type PermissionMode = "ask" | "allow" | "deny";
-type PermissionFallback = "deny" | "fail";
+export type PermissionMode = "ask" | "allow" | "deny";
+export type PermissionFallback = "deny" | "fail";
+
+export interface PermissionToolContext {
+  sessionID: string;
+  ask: ToolContext["ask"];
+  callID?: string;
+  abort?: AbortSignal;
+  metadata?: ToolContext["metadata"];
+}
+
+export interface PermissionToolResult {
+  title: string;
+  output: string;
+  metadata: Record<string, unknown>;
+}
 
 export interface PermissionToolInput {
   interactionId: string;
@@ -109,35 +123,34 @@ export class PermissionInteractionBroker {
   }
 
   ingestRuntimeEvent(event: unknown): void {
-    if (isPermissionAskedEvent(event)) {
-      const tool = event.properties.tool;
+    const asked = readPermissionAskedEvent(event);
+    if (asked !== undefined) {
+      const tool = asked.tool;
       if (tool === undefined) return;
-      const callKey = correlationKey(event.properties.sessionID, tool.callID);
+      const callKey = correlationKey(asked.sessionID, tool.callID);
       const interactionId = this.#interactionByCall.get(callKey);
       if (interactionId === undefined) return;
       const pending = this.#pending.get(interactionId);
       if (
         pending === undefined ||
-        pending.openCodeSessionId !== event.properties.sessionID
+        pending.openCodeSessionId !== asked.sessionID
       )
         return;
-      pending.permissionRequestId = event.properties.id;
+      pending.permissionRequestId = asked.id;
       this.#interactionByRequest.set(
-        correlationKey(event.properties.sessionID, event.properties.id),
+        correlationKey(asked.sessionID, asked.id),
         interactionId,
       );
       return;
     }
-    if (isPermissionRepliedEvent(event)) {
-      const requestKey = correlationKey(
-        event.properties.sessionID,
-        event.properties.requestID,
-      );
+    const replied = readPermissionRepliedEvent(event);
+    if (replied !== undefined) {
+      const requestKey = correlationKey(replied.sessionID, replied.requestID);
       const interactionId = this.#interactionByRequest.get(requestKey);
       if (interactionId === undefined) return;
       const pending = this.#pending.get(interactionId);
       if (pending === undefined || pending.reply !== undefined) return;
-      pending.reply = event.properties.reply;
+      pending.reply = replied.reply;
     }
   }
 
@@ -159,8 +172,8 @@ export class PermissionInteractionBroker {
 
   async execute(
     input: PermissionToolInput,
-    context: ToolContext,
-  ): Promise<ToolResult> {
+    context: PermissionToolContext,
+  ): Promise<PermissionToolResult> {
     const pending = this.#pending.get(input.interactionId);
     if (
       !this.#matchesToolInput(pending, input, context.sessionID) ||
@@ -181,27 +194,23 @@ export class PermissionInteractionBroker {
       );
     }
 
-    let decision: AcpPermissionDecision;
-    if (this.#mode === "allow") {
-      decision = supportedDecision(pending.event.request, "once");
-    } else if (this.#mode === "deny") {
-      decision = supportedDecision(pending.event.request, "reject");
-    } else {
-      decision = await this.#ask(pending, context);
-    }
+    const decision =
+      this.#mode === "ask"
+        ? await this.#ask(pending, context)
+        : resolvePermissionPolicyDecision(pending.event.request, this.#mode);
     this.#finish(input.interactionId, pending);
     return permissionResult(input.interactionId, decision);
   }
 
   async #ask(
     pending: PendingPermission,
-    context: ToolContext,
+    context: PermissionToolContext,
   ): Promise<AcpPermissionDecision> {
     const description = describePermission(
       pending.event.request,
       pending.event.inferredKind,
     );
-    context.metadata({
+    context.metadata?.({
       title: description.title,
       metadata: { acpServer: pending.serverId, acpToolKind: description.kind },
     });
@@ -216,14 +225,15 @@ export class PermissionInteractionBroker {
       },
     });
     try {
-      await withAbort(ask, context.abort);
+      await (context.abort === undefined ? ask : withAbort(ask, context.abort));
     } catch {
-      if (context.abort.aborted) return { outcome: "cancel" };
+      if (context.abort?.aborted) return { outcome: "cancel" };
       if (pending.reply !== undefined)
         return supportedDecision(pending.event.request, pending.reply);
-      return this.#fallback === "deny"
-        ? supportedDecision(pending.event.request, "reject")
-        : { outcome: "cancel" };
+      return resolvePermissionPolicyDecision(
+        pending.event.request,
+        this.#fallback,
+      );
     }
     return supportedDecision(pending.event.request, pending.reply ?? "once");
   }
@@ -289,7 +299,7 @@ function permissionResult(
   interactionId: string,
   decision: AcpPermissionDecision,
   reason?: string,
-): ToolResult {
+): PermissionToolResult {
   return {
     title: decision.outcome.startsWith("allow")
       ? "ACP permission approved"
@@ -301,6 +311,15 @@ function permissionResult(
       ...(reason === undefined ? {} : { reason }),
     },
   };
+}
+
+export function resolvePermissionPolicyDecision(
+  request: unknown,
+  policy: PermissionMode | PermissionFallback,
+): AcpPermissionDecision {
+  if (policy === "allow") return supportedDecision(request, "once");
+  if (policy === "deny") return supportedDecision(request, "reject");
+  return { outcome: "cancel" };
 }
 
 function supportedDecision(

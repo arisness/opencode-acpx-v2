@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { parsePluginOptions } from "../../src/config.js";
 import { RPC_PROTOCOL_VERSION } from "../../src/constants.js";
 import {
   BoundedNdjsonDecoder,
@@ -209,6 +210,54 @@ describe("method schemas", () => {
       state: "existing",
     });
     expect(() => parseMethodResult("turn.start", { ok: true })).toThrow();
+  });
+
+  it("validates configure hostCapabilities strictly while allowing omission", () => {
+    const options = parsePluginOptions({
+      stateDir: "/tmp/acpx-protocol-test",
+      servers: {
+        cursor: { preset: "cursor" },
+      },
+    });
+    expect(
+      parseMethodParams("configure", {
+        pluginInstanceId: "plugin-1",
+        directory: "/repo",
+        options,
+        hostCapabilities: {
+          permissionPrompt: true,
+          questionPrompt: false,
+          directNonInteractivePermissions: true,
+        },
+      }),
+    ).toMatchObject({
+      hostCapabilities: {
+        permissionPrompt: true,
+        questionPrompt: false,
+        directNonInteractivePermissions: true,
+      },
+    });
+    expect(() =>
+      parseMethodParams("configure", {
+        pluginInstanceId: "plugin-1",
+        directory: "/repo",
+        options,
+        hostCapabilities: {
+          permissionPrompt: true,
+          unexpectedFlag: true,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseMethodParams("configure", {
+        pluginInstanceId: "plugin-1",
+        directory: "/repo",
+        options,
+        hostCapabilities: {
+          questionPrompt: "false",
+        },
+      }),
+    ).toThrow();
   });
 });
 

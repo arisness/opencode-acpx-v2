@@ -26,6 +26,7 @@ import {
 } from "../config.js";
 import type { AcpConfigValue } from "../model-variants.js";
 import { DEFAULT_INTERACTION_TIMEOUT_MS } from "../constants.js";
+import { resolvePermissionPolicyDecision } from "../interactions/permission.js";
 import { resolveRuntimeCommand } from "../runtime-command.js";
 import { KeyedQueue } from "../session/keyed-queue.js";
 import type {
@@ -33,6 +34,7 @@ import type {
   CatalogueParams,
   CatalogueResult,
   ConfigureParams,
+  WorkerHostCapabilities,
   ElicitationResponseParams,
   ExtensionResponseParams,
   InteractionResponseParams,
@@ -236,6 +238,12 @@ export class RuntimeHost {
       options: {
         ...params.options,
         stateDir: expandHome(params.options.stateDir),
+      },
+      hostCapabilities: {
+        permissionPrompt: params.hostCapabilities?.permissionPrompt ?? true,
+        questionPrompt: params.hostCapabilities?.questionPrompt ?? true,
+        directNonInteractivePermissions:
+          params.hostCapabilities?.directNonInteractivePermissions ?? false,
       },
     };
     const fingerprint = objectFingerprint(normalised);
@@ -1049,6 +1057,31 @@ export class RuntimeHost {
     if (turnId === undefined) return { outcome: "cancel" };
     const record = this.#turns.get(turnId);
     if (record?.state !== "active") return { outcome: "cancel" };
+    const hostCapabilities = this.#hostCapabilities();
+    const permissions = this.#configuration?.options.permissions ?? {
+      default: "ask" as const,
+      fallback: "deny" as const,
+    };
+    if (
+      hostCapabilities.directNonInteractivePermissions &&
+      (permissions.default === "allow" || permissions.default === "deny")
+    ) {
+      return resolvePermissionPolicyDecision(request.raw, permissions.default);
+    }
+    if (permissions.default === "ask" && !hostCapabilities.permissionPrompt) {
+      this.#emitDiagnostic({
+        level: "warning",
+        code: "ACP_PERMISSION_PROMPT_UNAVAILABLE",
+        message:
+          "Host permission prompt bridge is unavailable; applying configured permission fallback",
+        serverId: record.params.serverId,
+        details: {
+          sessionKey: record.params.sessionKey,
+          fallback: permissions.fallback,
+        },
+      });
+      return resolvePermissionPolicyDecision(request.raw, permissions.fallback);
+    }
     const interactionId = randomUUID();
     const timeoutMs =
       this.#configuration?.options.interactionTimeoutMs ??
@@ -1098,6 +1131,13 @@ export class RuntimeHost {
     payload: unknown,
     signal: AbortSignal,
   ): Promise<unknown> {
+    if (!this.#hostCapabilities().questionPrompt) {
+      if (kind === "elicitation") return { action: "cancel" };
+      throw new RuntimeHostError(
+        "UNSUPPORTED_INTERACTION",
+        "Host does not support interactive ACP extensions",
+      );
+    }
     const interactionId = randomUUID();
     const timeoutMs =
       this.#configuration?.options.interactionTimeoutMs ??
@@ -1448,6 +1488,16 @@ export class RuntimeHost {
       );
     }
     return runtime;
+  }
+
+  #hostCapabilities(): Required<WorkerHostCapabilities> {
+    const capabilities = this.#configuration?.hostCapabilities;
+    return {
+      permissionPrompt: capabilities?.permissionPrompt ?? true,
+      questionPrompt: capabilities?.questionPrompt ?? true,
+      directNonInteractivePermissions:
+        capabilities?.directNonInteractivePermissions ?? false,
+    };
   }
 
   #requireConfigured(): void {

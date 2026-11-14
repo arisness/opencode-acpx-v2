@@ -2,20 +2,33 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { z } from "zod";
+
 import {
   parsePluginOptions,
+  serverWorkingDirectory,
   type PluginOptions,
   type ServerConfig,
 } from "./config.js";
+import { PACKAGE_NAME, PERMISSION_TOOL_NAME } from "./constants.js";
 import { CatalogueCache } from "./catalogue-cache.js";
+import {
+  isSessionDeletedEvent,
+  sessionDeletedId,
+} from "./interactions/events.js";
+import {
+  PermissionInteractionBroker,
+  type PermissionToolContext,
+  type PermissionToolInput,
+} from "./interactions/permission.js";
 import { createOpencodeAcpx } from "./provider.js";
 import { providerId } from "./presets.js";
 import { registerProviderRuntime } from "./registry.js";
-
+import { createSessionKey } from "./session/identity.js";
 import { BindingLedger } from "./session/ledger.js";
 import { buildProviderProjection, type ProviderProjection } from "./server.js";
 import { WorkerClient, type WorkerClientOptions } from "./worker/client.js";
-import type { CatalogueResult } from "./worker/messages.js";
+import type { CatalogueResult, WorkerDiagnostic } from "./worker/messages.js";
 
 const SOURCE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PROVIDER_URL = new URL("./provider.js", import.meta.url);
@@ -28,8 +41,47 @@ interface Disposable {
 }
 type UnknownRecord = Record<string, unknown>;
 
+export interface OpenCode2ToolContext {
+  id: string;
+  sessionID: string;
+  messageID: string;
+  agent?: string;
+  signal?: AbortSignal;
+  abort?: AbortSignal;
+  metadata?: (input: { title?: string; metadata?: UnknownRecord }) => void;
+}
+
+export interface OpenCode2ToolResult {
+  title?: string;
+  output: string;
+  content: string;
+  metadata?: UnknownRecord;
+}
+
+export interface OpenCode2ToolEditor {
+  add<Input = UnknownRecord>(value: {
+    name: string;
+    description: string;
+    input: z.ZodType<Input>;
+    execute(
+      input: Input,
+      context: OpenCode2ToolContext,
+    ): Promise<OpenCode2ToolResult>;
+  }): void;
+}
+
+const permissionToolInputSchema = z.object({
+  interactionId: z.string().min(1),
+  serverId: z.string().min(1),
+  sessionKey: z.string().min(1),
+  expiresAt: z.number().int().nonnegative(),
+  request: z.unknown().optional(),
+  inferredKind: z.string().optional(),
+});
+
 export interface OpenCode2Context {
   location?: { directory?: string };
+  options?: Readonly<Record<string, unknown>>;
   provider: {
     transform(
       fn: (editor: { add(value: unknown): void }) => void,
@@ -48,6 +100,28 @@ export interface OpenCode2Context {
       fn: (event: UnknownRecord) => void | Promise<void>,
     ): Promise<Disposable>;
   };
+  event?: {
+    subscribe(options?: Record<string, unknown>): AsyncIterable<UnknownRecord>;
+  };
+  tool?: {
+    transform(fn: (editor: OpenCode2ToolEditor) => void): Promise<Disposable>;
+    reload(): Promise<void>;
+    hook?: (
+      name: "execute.before" | "execute.after",
+      fn: (event: UnknownRecord) => void | Promise<void>,
+    ) => Promise<Disposable>;
+  };
+  permission?: {
+    assert(input: {
+      sessionID: string;
+      agent?: string;
+      action: string;
+      resources: string[];
+      save?: string[];
+      metadata?: UnknownRecord;
+      source?: { type: "tool"; messageID: string; id: string };
+    }): Promise<void>;
+  };
 }
 
 export interface OpenCode2Dependencies {
@@ -58,27 +132,57 @@ export interface OpenCode2Dependencies {
   env?: NodeJS.ProcessEnv;
 }
 
-function permissionMode(env: NodeJS.ProcessEnv): "allow" | "deny" {
-  return env[V2_PERMISSION_ENV]?.toLowerCase() === "allow" ? "allow" : "deny";
+function permissionMode(env: NodeJS.ProcessEnv): "allow" | "ask" | "deny" {
+  const value = env[V2_PERMISSION_ENV]?.trim().toLowerCase();
+  if (value === "allow") return "allow";
+  if (value === "ask") return "ask";
+  return "deny";
+}
+
+function isPlainRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function defaultServers(): Record<
+  string,
+  { preset: "cursor"; forwardEnv: string[] }
+> {
+  return {
+    cursor: {
+      preset: "cursor",
+      forwardEnv: [],
+    },
+  };
 }
 
 export function openCode2Options(
   env: NodeJS.ProcessEnv = process.env,
   stateDir = "~/.local/share/opencode/acpx-v2",
+  ctxOptions?: unknown,
 ): PluginOptions {
   const encoded = env[V2_CONFIG_ENV];
   if (encoded !== undefined && encoded.trim().length > 0) {
     return parsePluginOptions(JSON.parse(encoded) as unknown);
   }
+  if (isPlainRecord(ctxOptions) && Object.keys(ctxOptions).length > 0) {
+    return parsePluginOptions({
+      ...ctxOptions,
+      stateDir:
+        ctxOptions.stateDir === undefined ? stateDir : ctxOptions.stateDir,
+      permissions:
+        ctxOptions.permissions === undefined
+          ? { default: permissionMode(env), fallback: "deny" }
+          : ctxOptions.permissions,
+      servers:
+        ctxOptions.servers === undefined
+          ? defaultServers()
+          : ctxOptions.servers,
+    });
+  }
   return parsePluginOptions({
     stateDir,
     permissions: { default: permissionMode(env), fallback: "deny" },
-    servers: {
-      cursor: {
-        preset: "cursor",
-        forwardEnv: [],
-      },
-    },
+    servers: defaultServers(),
   });
 }
 
@@ -145,6 +249,17 @@ function stringField(
   return undefined;
 }
 
+function logWorkerDiagnostic(event: WorkerDiagnostic): void {
+  if (event.level !== "warning" && event.level !== "error") return;
+  const code = event.code ?? "ACP_WORKER_DIAGNOSTIC";
+  const message =
+    event.serverId === undefined
+      ? `[${PACKAGE_NAME}] ${code}`
+      : `[${PACKAGE_NAME}] ${code} (${event.serverId})`;
+  if (event.level === "error") console.error(message);
+  else console.warn(message);
+}
+
 async function discover(
   worker: WorkerClient,
   options: PluginOptions,
@@ -154,8 +269,7 @@ async function discover(
   const result = new Map<string, CatalogueResult>();
   for (const [serverId, server] of Object.entries(options.servers)) {
     if (!server.enabled) continue;
-    const cwd =
-      server.cwd === undefined ? directory : join(directory, server.cwd);
+    const cwd = serverWorkingDirectory(server, directory);
     try {
       const catalogue = await worker.catalogue({ serverId, cwd });
       result.set(serverId, catalogue);
@@ -174,7 +288,7 @@ export function createOpenCode2Setup(dependencies: OpenCode2Dependencies = {}) {
   ): Promise<(() => Promise<void>) | undefined> => {
     const env = dependencies.env ?? process.env;
     const directory = ctx.location?.directory ?? process.cwd();
-    const options = openCode2Options(env);
+    const options = openCode2Options(env, undefined, ctx.options);
     const pluginInstanceId = dependencies.pluginInstanceId?.() ?? randomUUID();
     const worker =
       dependencies.createWorkerClient?.({
@@ -185,146 +299,380 @@ export function createOpenCode2Setup(dependencies: OpenCode2Dependencies = {}) {
         workerPath: dependencies.workerPath ?? DEFAULT_WORKER_PATH,
         pluginOptions: options,
       });
-    await worker.configure({ pluginInstanceId, directory, options });
-    const catalogues = await discover(worker, options, directory);
-    const providerUrl = dependencies.providerUrl ?? DEFAULT_PROVIDER_URL;
-    const aisdkPackage = `aisdk:${pathToFileURL(fileURLToPath(providerUrl)).href}`;
-    const ledger = new BindingLedger({
-      path: join(options.stateDir, "bindings.json"),
+    const permissionBroker = new PermissionInteractionBroker({
+      mode: options.permissions.default,
+      fallback: options.permissions.fallback,
     });
-    const projections = new Map<string, ProviderProjection>();
+    const permissionBridge =
+      ctx.tool !== undefined &&
+      ctx.permission !== undefined &&
+      ctx.event !== undefined
+        ? { tool: ctx.tool, permission: ctx.permission }
+        : undefined;
+    const unsubscribeWorker = worker.subscribe((event) => {
+      if (event.type === "diagnostic") {
+        logWorkerDiagnostic(event);
+        return;
+      }
+      if (event.type === "interaction.permission") {
+        permissionBroker.observeWorkerEvent(event, event.serverId);
+      }
+    });
     const unregister: (() => void)[] = [];
     const registrations: Disposable[] = [];
+    const generationBySession = new Map<string, number>();
+    const sessionsByOpenCodeId = new Map<string, Map<string, string>>();
+    let disposed = false;
+    let cancelEvents: () => void = () => undefined;
 
-    for (const [serverId, server] of Object.entries(options.servers)) {
-      if (!server.enabled) continue;
-      const projection = buildProviderProjection(
-        serverId,
-        server,
-        catalogues.get(serverId),
-      );
-      projections.set(serverId, projection);
-      unregister.push(
-        registerProviderRuntime({
-          pluginInstanceId,
-          providerId: providerId(serverId),
-          client: worker,
-          serverId,
-          server,
-          directory,
-          worktree: directory,
-          ledger,
-        }),
-      );
-    }
-
-    registrations.push(
-      await ctx.provider.transform((editor) => {
-        for (const [serverId, server] of Object.entries(options.servers)) {
-          if (!server.enabled) continue;
-          const id = providerId(serverId);
-          const projection = projections.get(serverId);
-          if (projection === undefined) continue;
-          editor.add({
-            info: {
-              id,
-              name: `${serverTitle(serverId, server)} (ACP)`,
-              activation: "enabled",
-              package: aisdkPackage,
-            },
-            models: modelInfos(id, serverId, pluginInstanceId, projection),
-          });
-        }
-      }),
-    );
-
-    registrations.push(
-      await ctx.aisdk.hook("sdk", (event) => {
-        if (event.sdk !== undefined || event.package !== aisdkPackage) return;
-        const model = eventModel(event);
-        const id = stringField(model, "providerID");
-        const serverId =
-          id === undefined ? undefined : serverIdForProvider(options, id);
-        if (id === undefined || serverId === undefined) return;
-        event.sdk = createOpencodeAcpx({
-          name: id,
-          pluginInstanceId,
-          serverId,
-        });
-      }),
-    );
-    registrations.push(
-      await ctx.aisdk.hook("language", (event) => {
-        if (event.language !== undefined) return;
-        const model = eventModel(event);
-        const id = stringField(model, "providerID");
-        if (id === undefined || serverIdForProvider(options, id) === undefined)
-          return;
-        const sdk = event.sdk as
-          | { languageModel?: (modelId: string) => unknown }
-          | undefined;
-        const modelId = stringField(model, "modelID", "id");
-        if (modelId !== undefined && typeof sdk?.languageModel === "function") {
-          event.language = sdk.languageModel(modelId);
-        }
-      }),
-    );
-    registrations.push(
-      await ctx.session.hook("context", (event) => {
-        const model = eventModel(event);
-        const id = stringField(model, "providerID");
-        const serverId =
-          id === undefined ? undefined : serverIdForProvider(options, id);
-        if (serverId === undefined) return;
-        const server = options.servers[serverId];
-        const projection = projections.get(serverId);
-        if (server === undefined || projection === undefined) return;
-        const modelId = stringField(model, "id", "modelID") ?? "default";
-        const variantId = stringField(event, "variant");
-        const selection =
-          projection.routes.get(modelRouteKey(modelId, variantId)) ??
-          projection.routes.get(modelRouteKey(modelId));
-        if (selection === undefined)
-          throw new Error(
-            `Unknown ACP model route ${id ?? providerId(serverId)}/${modelId}`,
-          );
-        const sessionID = stringField(event, "sessionID");
-        const requestId =
-          stringField(event, "messageID", "requestID", "id") ?? randomUUID();
-        if (sessionID === undefined) {
-          throw new Error("OpenCode 2 session context omitted its session id");
-        }
-
-        const output =
-          typeof event.options === "object" &&
-          event.options !== null &&
-          !Array.isArray(event.options)
-            ? (event.options as UnknownRecord)
-            : {};
-        event.options = output;
-        output.openCodeSessionId = sessionID;
-        output.requestId = requestId;
-        output.generation = 0;
-        const agent = stringField(event, "agent");
-        if (agent !== undefined) output.agent = agent;
-        if (server.mode !== undefined) output.mode = server.mode;
-        output.opencodeAcpx = {
-          schema: 1,
-          variantId: variantId ?? null,
-          ...structuredClone(selection),
-        };
-      }),
-    );
-
-    await ctx.provider.reload();
-    return async () => {
+    const teardown = async (): Promise<void> => {
+      if (disposed) return;
+      disposed = true;
+      cancelEvents();
+      unsubscribeWorker();
       for (const registration of registrations.reverse()) {
         await registration.dispose().catch(() => undefined);
       }
       for (const release of unregister.splice(0)) release();
       await worker.dispose();
     };
+
+    try {
+      await worker.configure({
+        pluginInstanceId,
+        directory,
+        options,
+        hostCapabilities: {
+          permissionPrompt: permissionBridge !== undefined,
+          questionPrompt: false,
+          directNonInteractivePermissions: true,
+        },
+      });
+      const catalogues = await discover(worker, options, directory);
+      const providerUrl = dependencies.providerUrl ?? DEFAULT_PROVIDER_URL;
+      const aisdkPackage = `aisdk:${pathToFileURL(fileURLToPath(providerUrl)).href}`;
+      const ledger = new BindingLedger({
+        path: join(options.stateDir, "bindings.json"),
+      });
+      const projections = new Map<string, ProviderProjection>();
+
+      for (const [serverId, server] of Object.entries(options.servers)) {
+        if (!server.enabled) continue;
+        const projection = buildProviderProjection(
+          serverId,
+          server,
+          catalogues.get(serverId),
+        );
+        projections.set(serverId, projection);
+        const serverCwd = serverWorkingDirectory(server, directory);
+        unregister.push(
+          registerProviderRuntime({
+            pluginInstanceId,
+            providerId: providerId(serverId),
+            client: worker,
+            serverId,
+            server,
+            directory: serverCwd,
+            worktree: serverCwd,
+            ledger,
+          }),
+        );
+      }
+
+      registrations.push(
+        await ctx.provider.transform((editor) => {
+          for (const [serverId, server] of Object.entries(options.servers)) {
+            if (!server.enabled) continue;
+            const id = providerId(serverId);
+            const projection = projections.get(serverId);
+            if (projection === undefined) continue;
+            editor.add({
+              info: {
+                id,
+                name: `${serverTitle(serverId, server)} (ACP)`,
+                activation: "enabled",
+                package: aisdkPackage,
+              },
+              models: modelInfos(id, serverId, pluginInstanceId, projection),
+            });
+          }
+        }),
+      );
+
+      registrations.push(
+        await ctx.aisdk.hook("sdk", (event) => {
+          if (event.sdk !== undefined || event.package !== aisdkPackage) return;
+          const model = eventModel(event);
+          const id = stringField(model, "providerID");
+          const serverId =
+            id === undefined ? undefined : serverIdForProvider(options, id);
+          if (id === undefined || serverId === undefined) return;
+          event.sdk = createOpencodeAcpx({
+            name: id,
+            pluginInstanceId,
+            serverId,
+          });
+        }),
+      );
+      registrations.push(
+        await ctx.aisdk.hook("language", (event) => {
+          if (event.language !== undefined) return;
+          const model = eventModel(event);
+          const id = stringField(model, "providerID");
+          if (
+            id === undefined ||
+            serverIdForProvider(options, id) === undefined
+          )
+            return;
+          const sdk = event.sdk as
+            | { languageModel?: (modelId: string) => unknown }
+            | undefined;
+          const modelId = stringField(model, "modelID", "id");
+          if (
+            modelId !== undefined &&
+            typeof sdk?.languageModel === "function"
+          ) {
+            event.language = sdk.languageModel(modelId);
+          }
+        }),
+      );
+      registrations.push(
+        await ctx.session.hook("context", async (event) => {
+          const model = eventModel(event);
+          const id = stringField(model, "providerID");
+          const serverId =
+            id === undefined ? undefined : serverIdForProvider(options, id);
+          if (serverId === undefined) return;
+          const server = options.servers[serverId];
+          const projection = projections.get(serverId);
+          if (server === undefined || projection === undefined) return;
+          const modelId = stringField(model, "id", "modelID") ?? "default";
+          const variantId = stringField(event, "variant");
+          const selection =
+            projection.routes.get(modelRouteKey(modelId, variantId)) ??
+            projection.routes.get(modelRouteKey(modelId));
+          if (selection === undefined)
+            throw new Error(
+              `Unknown ACP model route ${id ?? providerId(serverId)}/${modelId}`,
+            );
+          const sessionID = stringField(event, "sessionID");
+          const requestId =
+            stringField(event, "messageID", "requestID", "id") ?? randomUUID();
+          if (sessionID === undefined) {
+            throw new Error(
+              "OpenCode 2 session context omitted its session id",
+            );
+          }
+
+          const generation = generationBySession.get(sessionID) ?? 0;
+          const sessionKey = await createSessionKey({
+            serverId,
+            server,
+            worktree: serverWorkingDirectory(server, directory),
+            openCodeSessionId: sessionID,
+            generation,
+          });
+          let bound = sessionsByOpenCodeId.get(sessionID);
+          if (bound === undefined) {
+            bound = new Map<string, string>();
+            sessionsByOpenCodeId.set(sessionID, bound);
+          }
+          bound.set(sessionKey, serverId);
+          permissionBroker.bindSession(sessionKey, sessionID);
+
+          const output =
+            typeof event.options === "object" &&
+            event.options !== null &&
+            !Array.isArray(event.options)
+              ? (event.options as UnknownRecord)
+              : {};
+          event.options = output;
+          output.openCodeSessionId = sessionID;
+          output.requestId = requestId;
+          output.generation = generation;
+          const agent = stringField(event, "agent");
+          if (agent !== undefined) output.agent = agent;
+          if (server.mode !== undefined) output.mode = server.mode;
+          output.opencodeAcpx = {
+            schema: 1,
+            variantId: variantId ?? null,
+            ...structuredClone(selection),
+          };
+        }),
+      );
+
+      cancelEvents = subscribeOpenCodeEvents(
+        ctx.event,
+        () => disposed,
+        async (runtimeEvent) => {
+          permissionBroker.ingestRuntimeEvent(runtimeEvent);
+          await handleOpenCodeEvent(
+            runtimeEvent,
+            sessionsByOpenCodeId,
+            generationBySession,
+            permissionBroker,
+            worker,
+          );
+        },
+      );
+
+      if (permissionBridge !== undefined) {
+        const { tool: toolDomain, permission: permissionDomain } =
+          permissionBridge;
+        if (toolDomain.hook !== undefined) {
+          registrations.push(
+            await toolDomain.hook("execute.before", (event) => {
+              const tool = stringField(event, "tool");
+              const sessionID = stringField(event, "sessionID");
+              const callID = stringField(event, "id", "callID");
+              if (
+                tool === undefined ||
+                sessionID === undefined ||
+                callID === undefined
+              ) {
+                return;
+              }
+              permissionBroker.beforeToolExecute(
+                PERMISSION_TOOL_NAME,
+                { tool, sessionID, callID },
+                event.input,
+              );
+            }),
+          );
+        }
+        registrations.push(
+          await toolDomain.transform((editor) => {
+            editor.add({
+              name: PERMISSION_TOOL_NAME,
+              description:
+                "Completes a pending ACP agent permission request. This tool is reserved for opencode-acpx.",
+              input: permissionToolInputSchema,
+              execute: async (rawInput, toolContext) => {
+                const parsedInput: PermissionToolInput = {
+                  interactionId: rawInput.interactionId,
+                  serverId: rawInput.serverId,
+                  sessionKey: rawInput.sessionKey,
+                  expiresAt: rawInput.expiresAt,
+                  ...(rawInput.request === undefined
+                    ? {}
+                    : { request: rawInput.request }),
+                  ...(rawInput.inferredKind === undefined
+                    ? {}
+                    : { inferredKind: rawInput.inferredKind }),
+                };
+                const abortSignal = toolContext.signal ?? toolContext.abort;
+                const adaptedContext: PermissionToolContext = {
+                  sessionID: toolContext.sessionID,
+                  callID: toolContext.id,
+                  ...(abortSignal === undefined ? {} : { abort: abortSignal }),
+                  ...(toolContext.metadata === undefined
+                    ? {}
+                    : { metadata: toolContext.metadata }),
+                  ask: async (request) => {
+                    await permissionDomain.assert({
+                      sessionID: toolContext.sessionID,
+                      ...(toolContext.agent === undefined
+                        ? {}
+                        : { agent: toolContext.agent }),
+                      action: request.permission,
+                      resources: request.patterns,
+                      save: request.always,
+                      metadata: request.metadata,
+                      source: {
+                        type: "tool",
+                        messageID: toolContext.messageID,
+                        id: toolContext.id,
+                      },
+                    });
+                  },
+                };
+                const result = await permissionBroker.execute(
+                  parsedInput,
+                  adaptedContext,
+                );
+                return {
+                  output: result.output,
+                  content: result.output,
+                  metadata: result.metadata,
+                };
+              },
+            });
+          }),
+        );
+        await toolDomain.reload();
+      }
+
+      await ctx.provider.reload();
+      return teardown;
+    } catch (error) {
+      await teardown().catch(() => undefined);
+      throw error;
+    }
   };
+}
+
+function subscribeOpenCodeEvents(
+  eventSource: OpenCode2Context["event"],
+  isDisposed: () => boolean,
+  onEvent: (event: unknown) => Promise<void>,
+): () => void {
+  if (eventSource === undefined) return () => undefined;
+  let iterator: AsyncIterator<UnknownRecord> | undefined;
+  try {
+    const activeIterator = eventSource.subscribe()[Symbol.asyncIterator]();
+    iterator = activeIterator;
+    void (async () => {
+      try {
+        while (!isDisposed()) {
+          const step = await activeIterator.next();
+          if (isDisposed() || step.done) break;
+          await onEvent(step.value);
+        }
+      } catch {
+        // Event subscription failures are non-fatal for provider teardown.
+      }
+    })();
+  } catch {
+    // Ignore event subscription setup failures when optional stream fails.
+  }
+  return () => {
+    try {
+      const stopped = iterator?.return?.();
+      if (stopped !== undefined) {
+        void Promise.resolve(stopped).catch(() => undefined);
+      }
+    } catch {
+      // Ignore synchronous iterator cancellation errors during teardown.
+    }
+  };
+}
+
+async function handleOpenCodeEvent(
+  runtimeEvent: unknown,
+  sessionsByOpenCodeId: Map<string, Map<string, string>>,
+  generationBySession: Map<string, number>,
+  permissionBroker: PermissionInteractionBroker,
+  worker: WorkerClient,
+): Promise<void> {
+  if (!isSessionDeletedEvent(runtimeEvent)) return;
+  const deletedId = sessionDeletedId(runtimeEvent);
+  permissionBroker.deleteSession(deletedId);
+  const bound = sessionsByOpenCodeId.get(deletedId);
+  sessionsByOpenCodeId.delete(deletedId);
+  if (bound === undefined || bound.size === 0) return;
+  generationBySession.set(
+    deletedId,
+    (generationBySession.get(deletedId) ?? 0) + 1,
+  );
+  await Promise.all(
+    [...bound.entries()].map(([sessionKey, serverId]) =>
+      worker.closeSession(serverId, sessionKey, true).catch(() => {
+        console.warn(
+          `[${PACKAGE_NAME}] ACP_SESSION_CLOSE_FAILED (${serverId})`,
+        );
+      }),
+    ),
+  );
 }
 
 function serverIdForProvider(
@@ -337,11 +685,20 @@ function serverIdForProvider(
 }
 
 function serverTitle(serverId: string, server: ServerConfig): string {
-  if (server.preset === "cursor") return "Cursor";
-  if (server.preset === "claude") return "Claude";
-  if (server.preset === "codex") return "Codex";
-  if (server.preset === "grok-build") return "Grok Build";
-  if (server.preset === "hermes") return "Hermes";
-  if (server.preset === "antigravity") return "Antigravity";
-  return serverId;
+  switch (server.preset) {
+    case "cursor":
+      return "Cursor";
+    case "claude":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "grok-build":
+      return "Grok Build";
+    case "hermes":
+      return "Hermes";
+    case "antigravity":
+      return "Antigravity";
+    case "custom":
+      return serverId;
+  }
 }

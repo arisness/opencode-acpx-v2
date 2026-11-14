@@ -358,4 +358,321 @@ describe("RuntimeHost", () => {
     });
     await host.dispose();
   });
+
+  it("settles allow/deny permissions directly when directNonInteractivePermissions is enabled", async () => {
+    const withTimeout = <T>(promise: Promise<T>): Promise<T> =>
+      Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(
+            () => reject(new Error("Timed out waiting for direct permission")),
+            50,
+          ),
+        ),
+      ]);
+
+    const runDirectCase = async (
+      mode: "allow" | "deny",
+      options: { optionId: string; name: string; kind: string }[],
+      expectedOutcome: string,
+    ) => {
+      const fake = fakeRuntime();
+      let finishTurn: (() => void) | undefined;
+      const finished = new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
+      let factoryInput: RuntimeFactoryInput | undefined;
+      const startTurnSpy = vi.fn(() => ({
+        requestId: "request-1",
+        events: {
+          async *[Symbol.asyncIterator]() {
+            await finished;
+            yield* [];
+          },
+        },
+        result: finished.then(() => ({
+          status: "completed" as const,
+          stopReason: "end_turn",
+        })),
+        cancel: () => Promise.resolve(),
+        closeStream: () => Promise.resolve(),
+      }));
+      fake.runtime.startTurn = startTurnSpy;
+      const events: RuntimeWorkerEvent[] = [];
+      const host = new RuntimeHost({
+        emit: (event) => events.push(event),
+        runtimeFactory: (input) => {
+          factoryInput = input;
+          return fake.runtime;
+        },
+      });
+      const base = configuration();
+      await host.configure({
+        ...base,
+        options: {
+          ...base.options,
+          permissions: { default: mode, fallback: "deny" },
+        },
+        hostCapabilities: {
+          permissionPrompt: true,
+          questionPrompt: false,
+          directNonInteractivePermissions: true,
+        },
+      });
+      await host.startTurn({
+        turnId: "turn-1",
+        serverId: "cursor",
+        sessionKey: "session-1",
+        cwd: process.cwd(),
+        requestId: "request-1",
+        text: "Edit file",
+      });
+      await vi.waitFor(() => expect(startTurnSpy).toHaveBeenCalledTimes(1));
+      const request = {
+        sessionId: "backend:session-1",
+        raw: {
+          sessionId: "backend:session-1",
+          toolCall: { toolCallId: "tool-1", title: "Edit file", kind: "edit" },
+          options,
+        },
+        inferredKind: "edit" as const,
+      };
+      const onPermissionRequest = factoryInput?.onPermissionRequest;
+      if (onPermissionRequest === undefined) {
+        throw new Error("missing onPermissionRequest");
+      }
+      const decision = await withTimeout(
+        onPermissionRequest(request as never, {
+          signal: new AbortController().signal,
+        }),
+      );
+      expect(decision).toEqual({ outcome: expectedOutcome });
+      expect(
+        events.filter((event) => event.type === "interaction.permission"),
+      ).toHaveLength(0);
+      finishTurn?.();
+      await vi.waitFor(() =>
+        expect(events).toContainEqual(
+          expect.objectContaining({ type: "turn.result", turnId: "turn-1" }),
+        ),
+      );
+      await host.dispose();
+    };
+
+    await runDirectCase(
+      "allow",
+      [
+        { optionId: "once", name: "Allow once", kind: "allow_once" },
+        { optionId: "always", name: "Allow always", kind: "allow_always" },
+      ],
+      "allow_once",
+    );
+    await runDirectCase(
+      "allow",
+      [{ optionId: "always", name: "Allow always", kind: "allow_always" }],
+      "allow_always",
+    );
+    await runDirectCase("allow", [], "cancel");
+    await runDirectCase(
+      "deny",
+      [
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+        {
+          optionId: "reject-always",
+          name: "Always reject",
+          kind: "reject_always",
+        },
+      ],
+      "reject_once",
+    );
+    await runDirectCase(
+      "deny",
+      [
+        {
+          optionId: "reject-always",
+          name: "Always reject",
+          kind: "reject_always",
+        },
+      ],
+      "reject_always",
+    );
+    await runDirectCase("deny", [], "cancel");
+  });
+
+  it("settles ask permissions via fallback and emits a diagnostic when permissionPrompt is false", async () => {
+    const withTimeout = <T>(promise: Promise<T>): Promise<T> =>
+      Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(
+            () =>
+              reject(new Error("Timed out waiting for permission fallback")),
+            50,
+          ),
+        ),
+      ]);
+
+    const runFallbackCase = async (
+      fallback: "deny" | "fail",
+      expectedOutcome: string,
+    ) => {
+      const fake = fakeRuntime();
+      let finishTurn: (() => void) | undefined;
+      const finished = new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
+      let factoryInput: RuntimeFactoryInput | undefined;
+      const startTurnSpy = vi.fn(() => ({
+        requestId: "request-1",
+        events: {
+          async *[Symbol.asyncIterator]() {
+            await finished;
+            yield* [];
+          },
+        },
+        result: finished.then(() => ({
+          status: "completed" as const,
+          stopReason: "end_turn",
+        })),
+        cancel: () => Promise.resolve(),
+        closeStream: () => Promise.resolve(),
+      }));
+      fake.runtime.startTurn = startTurnSpy;
+      const events: RuntimeWorkerEvent[] = [];
+      const host = new RuntimeHost({
+        emit: (event) => events.push(event),
+        runtimeFactory: (input) => {
+          factoryInput = input;
+          return fake.runtime;
+        },
+      });
+      const base = configuration();
+      await host.configure({
+        ...base,
+        options: {
+          ...base.options,
+          permissions: { default: "ask", fallback },
+        },
+        hostCapabilities: {
+          permissionPrompt: false,
+          questionPrompt: false,
+          directNonInteractivePermissions: true,
+        },
+      });
+      await host.startTurn({
+        turnId: "turn-1",
+        serverId: "cursor",
+        sessionKey: "session-1",
+        cwd: process.cwd(),
+        requestId: "request-1",
+        text: "Edit file",
+      });
+      await vi.waitFor(() => expect(startTurnSpy).toHaveBeenCalledTimes(1));
+      const onPermissionRequest = factoryInput?.onPermissionRequest;
+      if (onPermissionRequest === undefined) {
+        throw new Error("missing onPermissionRequest");
+      }
+      const decision = await withTimeout(
+        onPermissionRequest(
+          {
+            sessionId: "backend:session-1",
+            raw: {
+              sessionId: "backend:session-1",
+              toolCall: { toolCallId: "tool-1", title: "Edit file" },
+              options: [
+                { optionId: "yes", name: "Allow once", kind: "allow_once" },
+                { optionId: "no", name: "Reject once", kind: "reject_once" },
+              ],
+            },
+          } as never,
+          { signal: new AbortController().signal },
+        ),
+      );
+      expect(decision).toEqual({ outcome: expectedOutcome });
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "diagnostic",
+          level: "warning",
+          code: "ACP_PERMISSION_PROMPT_UNAVAILABLE",
+          serverId: "cursor",
+          details: { sessionKey: "session-1", fallback },
+        }),
+      );
+      expect(
+        events.filter((event) => event.type === "interaction.permission"),
+      ).toHaveLength(0);
+      finishTurn?.();
+      await host.dispose();
+    };
+
+    await runFallbackCase("deny", "reject_once");
+    await runFallbackCase("fail", "cancel");
+  });
+
+  it("fails closed for reverse interactions when questionPrompt is false", async () => {
+    const fake = fakeRuntime();
+    let factoryInput: RuntimeFactoryInput | undefined;
+    const events: RuntimeWorkerEvent[] = [];
+    const host = new RuntimeHost({
+      emit: (event) => events.push(event),
+      runtimeFactory: (input) => {
+        factoryInput = input;
+        return fake.runtime;
+      },
+    });
+    const base = configuration();
+    await host.configure({
+      ...base,
+      hostCapabilities: {
+        permissionPrompt: false,
+        questionPrompt: false,
+        directNonInteractivePermissions: true,
+      },
+    });
+
+    const onElicitationRequest =
+      factoryInput?.compatCallbacks.onElicitationRequest;
+    const onExtensionRequest = factoryInput?.compatCallbacks.onExtensionRequest;
+    if (
+      onElicitationRequest === undefined ||
+      onExtensionRequest === undefined
+    ) {
+      throw new Error("missing compat reverse interaction callbacks");
+    }
+
+    const elicitation = await Promise.race([
+      onElicitationRequest(
+        { sessionId: "backend:session", message: "Choose" } as never,
+        { signal: new AbortController().signal },
+      ),
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error("Elicitation hung")), 50),
+      ),
+    ]);
+    expect(elicitation).toEqual({ action: "cancel" });
+
+    await expect(
+      Promise.race([
+        onExtensionRequest(
+          "vendor/example",
+          { sessionId: "backend:session", value: 1 },
+          { signal: new AbortController().signal },
+        ),
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("Extension hung")), 50),
+        ),
+      ]),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_INTERACTION",
+    });
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "interaction.elicitation" ||
+          event.type === "interaction.extension",
+      ),
+    ).toHaveLength(0);
+    await host.dispose();
+  });
 });

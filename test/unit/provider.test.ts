@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import type {
   LanguageModelV3CallOptions,
   LanguageModelV3StreamPart,
@@ -6,6 +8,7 @@ import type { AcpPermissionDecision } from "acpx/runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PERMISSION_TOOL_NAME } from "../../src/constants.js";
+import { serverWorkingDirectory } from "../../src/config.js";
 import { createOpencodeAcpx } from "../../src/provider.js";
 import {
   registerProviderRuntime,
@@ -756,5 +759,46 @@ describe("OpenCode Acpx language provider", () => {
     expect(second).toContainEqual(
       expect.objectContaining({ type: "text-delta", delta: "Done" }),
     );
+  });
+
+  it("forwards pre-resolved runtime.directory as startTurn cwd without double-resolving server.cwd", async () => {
+    for (const configuredCwd of ["packages/app", "/tmp/acp-abs-cwd"]) {
+      const pluginInstanceId = `plugin-cwd-${configuredCwd}`;
+      const providerId = "acp.cursor.cwd";
+      const client = new FakeWorkerClient();
+      const baseDirectory = process.cwd();
+      const expectedCwd = serverWorkingDirectory(
+        { cwd: configuredCwd },
+        baseDirectory,
+      );
+      client.onStart = (params, channel) => {
+        channel.push({
+          type: "turn.result",
+          turnId: params.turnId,
+          index: 0,
+          result: { status: "completed", stopReason: "end_turn" },
+        });
+      };
+      registerProviderRuntime({
+        pluginInstanceId,
+        providerId,
+        client,
+        serverId: "cursor",
+        server: makeServerConfig({ cwd: configuredCwd }),
+        directory: expectedCwd,
+        worktree: baseDirectory,
+      });
+      registered.push([pluginInstanceId, providerId]);
+
+      const model = createOpencodeAcpx({
+        name: providerId,
+        pluginInstanceId,
+        serverId: "cursor",
+      }).languageModel("cursor-model");
+
+      await readStream((await model.doStream(call(providerId))).stream);
+      expect(client.starts[0]?.cwd).toBe(expectedCwd);
+      expect(resolve(baseDirectory, configuredCwd)).toBe(expectedCwd);
+    }
   });
 });

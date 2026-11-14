@@ -292,4 +292,103 @@ describe("PermissionInteractionBroker", () => {
     ).toEqual(["session-key-1"]);
     expect(broker.deleteSession("oc-session-1")).toEqual([]);
   });
+
+  it.each([
+    ["once", "allow_once"],
+    ["always", "allow_always"],
+    ["reject", "reject_once"],
+  ] as const)(
+    "correlates an OpenCode 2 data %s permission reply",
+    async (reply, outcome) => {
+      const broker = preparedBroker();
+      const ask = vi.fn(async () => {
+        broker.ingestRuntimeEvent({
+          type: "permission.asked",
+          data: {
+            id: "permission-v2-1",
+            sessionID: "oc-session-1",
+            action: "acp.cursor.edit",
+            resources: ["/repo/package.json"],
+            save: ["/repo/package.json"],
+            metadata: { source: "oc2" },
+            source: { type: "tool", messageID: "message-v2-1", id: "call-1" },
+          },
+        });
+        broker.ingestRuntimeEvent({
+          type: "permission.replied",
+          data: {
+            sessionID: "oc-session-1",
+            requestID: "permission-v2-1",
+            reply,
+          },
+        });
+        if (reply === "reject") throw new Error("Permission rejected");
+      });
+
+      const result = parsedDecision(
+        await broker.execute(toolInput(), {
+          sessionID: "oc-session-1",
+          ask,
+        }),
+      );
+
+      expect(result).toEqual({
+        interactionId: "interaction-1",
+        decision: { outcome },
+      });
+    },
+  );
+
+  it("ignores OpenCode 2 permission events for mismatched session, call, or request ids", async () => {
+    const broker = preparedBroker();
+    const ask = vi.fn(async () => {
+      broker.ingestRuntimeEvent({
+        type: "permission.asked",
+        data: {
+          id: "permission-v2-wrong-session",
+          sessionID: "other-session",
+          action: "acp.cursor.edit",
+          resources: ["/repo/package.json"],
+          source: { type: "tool", messageID: "message-1", id: "call-1" },
+        },
+      });
+      broker.ingestRuntimeEvent({
+        type: "permission.asked",
+        data: {
+          id: "permission-v2-wrong-call",
+          sessionID: "oc-session-1",
+          action: "acp.cursor.edit",
+          resources: ["/repo/package.json"],
+          source: { type: "tool", messageID: "message-1", id: "other-call" },
+        },
+      });
+      broker.ingestRuntimeEvent({
+        type: "permission.asked",
+        data: {
+          id: "permission-v2-right",
+          sessionID: "oc-session-1",
+          action: "acp.cursor.edit",
+          resources: ["/repo/package.json"],
+          source: { type: "tool", messageID: "message-1", id: "call-1" },
+        },
+      });
+      broker.ingestRuntimeEvent({
+        type: "permission.replied",
+        data: {
+          sessionID: "oc-session-1",
+          requestID: "other-request",
+          reply: "reject",
+        },
+      });
+    });
+
+    const result = parsedDecision(
+      await broker.execute(toolInput(), {
+        sessionID: "oc-session-1",
+        ask,
+      }),
+    );
+
+    expect(result.decision.outcome).toBe("allow_once");
+  });
 });

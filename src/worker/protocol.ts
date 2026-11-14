@@ -43,11 +43,20 @@ export const permissionDecisionSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("cancel") }).strict(),
 ]);
 
+export const hostCapabilitiesSchema = z
+  .object({
+    permissionPrompt: z.boolean().optional(),
+    questionPrompt: z.boolean().optional(),
+    directNonInteractivePermissions: z.boolean().optional(),
+  })
+  .strict();
+
 export const configureParamsSchema = z
   .object({
     pluginInstanceId: identifierSchema,
     directory: pathSchema,
     options: pluginOptionsSchema,
+    hostCapabilities: hostCapabilitiesSchema.optional(),
   })
   .strict();
 
