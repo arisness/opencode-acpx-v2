@@ -15,6 +15,7 @@ export const presetIdSchema = z.enum([
   "codex",
   "grok-build",
   "hermes",
+  "antigravity",
   "custom",
 ]);
 export type PresetId = z.infer<typeof presetIdSchema>;
@@ -148,4 +149,12 @@ export function expandHome(path: string): string {
 export function parsePluginOptions(value: unknown): PluginOptions {
   const parsed = pluginOptionsSchema.parse(value);
   return { ...parsed, stateDir: expandHome(parsed.stateDir) };
+}
+
+/** Resolves a server's configured working directory once against a host workspace directory. */
+export function serverWorkingDirectory(
+  server: Pick<ServerConfig, "cwd">,
+  fallback: string,
+): string {
+  return server.cwd === undefined ? fallback : resolve(fallback, server.cwd);
 }

@@ -172,4 +172,112 @@ describe("ACP model variant projection", () => {
     expect(models[0]?.variants).toHaveProperty("high");
     expect(models[1]?.variants).toEqual({});
   });
+
+  it("projects Antigravity model and thought_level options including model-specific xhigh", () => {
+    const models = projectAcpModels({
+      preset: "antigravity",
+      models: [
+        { id: "model-standard", name: "Standard" },
+        { id: "model-xhigh", name: "Reasoning" },
+      ],
+      currentModelId: "model-standard",
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "model-standard",
+          options: [
+            { value: "model-standard", name: "Standard" },
+            { value: "model-xhigh", name: "Reasoning" },
+          ],
+        },
+        {
+          id: "mode",
+          category: "mode",
+          type: "select",
+          currentValue: "ask",
+          options: [
+            { value: "ask", name: "Ask" },
+            { value: "code", name: "Code" },
+          ],
+        },
+        {
+          id: "thought_level",
+          category: "thought_level",
+          type: "select",
+          currentValue: "medium",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ],
+      modelConfigOptions: {
+        "model-xhigh": [
+          {
+            id: "model",
+            category: "model",
+            type: "select",
+            currentValue: "model-xhigh",
+            options: [
+              { value: "model-standard", name: "Standard" },
+              { value: "model-xhigh", name: "Reasoning" },
+            ],
+          },
+          {
+            id: "mode",
+            category: "mode",
+            type: "select",
+            currentValue: "ask",
+            options: [
+              { value: "ask", name: "Ask" },
+              { value: "code", name: "Code" },
+            ],
+          },
+          {
+            id: "thought_level",
+            category: "thought_level",
+            type: "select",
+            currentValue: "high",
+            options: [
+              { value: "low", name: "Low" },
+              { value: "medium", name: "Medium" },
+              { value: "high", name: "High" },
+              { value: "xhigh", name: "XHigh" },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(models[0]?.selection).toEqual({
+      modelId: "model-standard",
+      config: { thought_level: "medium" },
+    });
+    expect(Object.keys(models[0]?.variants ?? {})).toEqual([
+      "low",
+      "medium",
+      "high",
+    ]);
+
+    expect(models[1]?.selection).toEqual({
+      modelId: "model-xhigh",
+      config: { thought_level: "high" },
+    });
+    expect(Object.keys(models[1]?.variants ?? {})).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+    expect(models[1]?.variants.xhigh).toEqual({
+      selection: {
+        modelId: "model-xhigh",
+        config: { thought_level: "xhigh" },
+      },
+    });
+    expect(JSON.stringify(models)).not.toContain('"mode"');
+  });
 });

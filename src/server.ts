@@ -898,6 +898,8 @@ function providerDisplayName(serverId: string, server: ServerConfig): string {
       return "Grok Build";
     case "hermes":
       return "Hermes";
+    case "antigravity":
+      return "Antigravity";
     case "custom":
       return serverId;
   }

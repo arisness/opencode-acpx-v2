@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parsePluginOptions } from "../../src/config.js";
 import { resolveRuntimeCommand } from "../../src/runtime-command.js";
 
-function server(preset: "claude" | "codex" | "cursor") {
+function server(preset: "claude" | "codex" | "cursor" | "antigravity") {
   const value = parsePluginOptions({ servers: { test: { preset } } }).servers
     .test;
   if (value === undefined) throw new Error("test server was not parsed");
@@ -30,6 +30,14 @@ describe("resolveRuntimeCommand", () => {
   it("keeps system-runtime presets unchanged", () => {
     expect(resolveRuntimeCommand(server("cursor"), () => true)).toEqual({
       command: "cursor-agent",
+      args: ["acp"],
+    });
+    expect(resolveRuntimeCommand(server("antigravity"), () => true)).toEqual({
+      command: "agy",
+      args: ["acp"],
+    });
+    expect(resolveRuntimeCommand(server("antigravity"), () => false)).toEqual({
+      command: "agy",
       args: ["acp"],
     });
   });

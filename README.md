@@ -14,23 +14,27 @@ OpenCode 1 entrypoints remain available.
 
 ## OpenCode 2 status
 
-The OpenCode 2 path currently supports model discovery, provider registration,
-stateful ACP sessions, text/reasoning streaming, and ACP-owned activity. The
-2.0 public plugin API does not currently expose the same permission-prompt
-context as OpenCode 1, so permissions fail closed by default. Set
-`OPENCODE_ACPX_V2_PERMISSIONS=allow` only when you trust the ACP agent and want
-it to perform tool actions.
+The OpenCode 2 path supports configuration through OpenCode plugin `options`
+(as well as `OPENCODE_ACPX_V2_CONFIG`), model discovery, provider registration,
+stateful ACP sessions, text/reasoning streaming, ACP-owned activity, and
+session cleanup on `session.deleted`. When the host exposes `ctx.tool`,
+`ctx.permission` and `ctx.event`, interactive `"ask"` permission prompts are
+routed through OpenCode 2's native permission system. When host permission UI
+is unavailable, permissions fail closed by default. Set
+`OPENCODE_ACPX_V2_PERMISSIONS=ask` to prompt through OpenCode 2 or `allow` only
+when you trust the ACP agent to perform tool actions without confirmation.
 
 ## Supported agents
 
-| Preset       | ACP command                                           | Notes                                      |
-| ------------ | ----------------------------------------------------- | ------------------------------------------ |
-| `cursor`     | `cursor-agent acp`, falling back to `agent acp`       | Install and authenticate Cursor separately |
-| `claude`     | Bundled Claude Agent ACP adapter                      | Adapter version is pinned by this package  |
-| `codex`      | Bundled Codex ACP adapter                             | Adapter version is pinned by this package  |
-| `grok-build` | `grok agent --no-leader stdio`                        | Install and authenticate Grok separately   |
-| `hermes`     | `hermes acp`, falling back to `hermes-acp`            | Install and configure Hermes separately    |
-| `custom`     | Any configured ACP v1 command using NDJSON over stdio | Capability-detected                        |
+| Preset        | ACP command                                           | Notes                                           |
+| ------------- | ----------------------------------------------------- | ----------------------------------------------- |
+| `cursor`      | `cursor-agent acp`, falling back to `agent acp`       | Install and authenticate Cursor separately      |
+| `claude`      | Bundled Claude Agent ACP adapter                      | Adapter version is pinned by this package       |
+| `codex`       | Bundled Codex ACP adapter                             | Adapter version is pinned by this package       |
+| `antigravity` | `agy acp`                                             | Install and authenticate Antigravity separately |
+| `grok-build`  | `grok agent --no-leader stdio`                        | Install and authenticate Grok separately        |
+| `hermes`      | `hermes acp`, falling back to `hermes-acp`            | Install and configure Hermes separately         |
+| `custom`      | Any configured ACP v1 command using NDJSON over stdio | Capability-detected                             |
 
 ## Requirements
 

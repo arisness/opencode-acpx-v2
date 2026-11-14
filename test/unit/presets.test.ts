@@ -27,6 +27,7 @@ describe("PRESETS", () => {
     ],
     ["grok-build", "grok", ["agent", "--no-leader", "stdio"], "profile", true],
     ["hermes", "hermes", ["acp"], "profile", true],
+    ["antigravity", "agy", ["acp"], "profile", true],
   ] as const)(
     "defines the pinned %s adapter contract",
     (id, command, args, processIsolation, supportsLegacyModels) => {
@@ -122,11 +123,109 @@ describe("PRESETS", () => {
       PRESETS["grok-build"].diagnostics.requiredInitialiseMetadata,
     ).toEqual(["modelState", "availableCommands", "defaultAuthMethodId"]);
   });
+
+  it("records the Antigravity ACP 1.5.7 contract", () => {
+    const antigravity = PRESETS.antigravity;
+
+    expect(antigravity.fallbacks).toEqual([]);
+    expect(antigravity.nativeSkillRoots).toEqual([
+      ".agents/skills",
+      ".gemini/skills",
+      "~/.gemini/skills",
+    ]);
+    expect(antigravity.version).toEqual({
+      kind: "system-feature-probe",
+      testedVersion: "1.5.7",
+      probe: { command: "agy", args: ["--version"] },
+      featureProbes: [{ command: "agy", args: ["acp", "--help"] }],
+    });
+    expect(antigravity.controls.config).toEqual([
+      { kind: "config-option", id: "model" },
+      { kind: "config-option", id: "mode" },
+      { kind: "config-option", id: "thought_level" },
+    ]);
+    expect(antigravity.auth).toEqual({
+      ownership: "agent-native",
+      methodIds: [
+        "oauth-personal",
+        "oauth-business",
+        "gemini-api-key",
+        "agent-platform",
+      ],
+      dynamicMethods: false,
+      preflight: [],
+      recognisedEnvironment: [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+      ],
+      secretEnvironment: [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+      ],
+    });
+    expect(antigravity.capabilities).toEqual({
+      protocolVersion: 1,
+      prompt: {
+        image: "required",
+        audio: "unsupported",
+        embeddedContext: "required",
+      },
+      mcp: {
+        stdio: "unsupported",
+        http: "unsupported",
+        sse: "unsupported",
+      },
+      sessions: {
+        load: "required",
+        list: "required",
+        resume: "required",
+        fork: "unsupported",
+        close: "required",
+        delete: "unsupported",
+        additionalDirectories: "required",
+      },
+      requiredPaths: [
+        "agentCapabilities.loadSession",
+        "agentCapabilities.promptCapabilities.image",
+        "agentCapabilities.promptCapabilities.embeddedContext",
+        "agentCapabilities.sessionCapabilities.list",
+        "agentCapabilities.sessionCapabilities.resume",
+        "agentCapabilities.sessionCapabilities.close",
+        "agentCapabilities.sessionCapabilities.additionalDirectories",
+      ],
+      optionalPaths: [
+        "_meta.antigravity.tier",
+        "_meta.antigravity.systemPrompt.append",
+        "agentCapabilities.auth.logout",
+      ],
+      requiredClientPaths: [],
+    });
+    expect(antigravity.extensions).toEqual({
+      clientToAgent: [],
+      agentToClient: [],
+      unknownReverseMethods: "route-to-plugin",
+    });
+    expect(antigravity.mcp).toMatchObject({
+      sessionServers: "merge-and-dedupe",
+      knownAdvertisementMismatch: true,
+    });
+    expect(antigravity.diagnostics.nativeChecks).toEqual([
+      { command: "agy", args: ["acp", "--help"] },
+    ]);
+    expect(antigravity.diagnostics.knownLimitations.length).toBeGreaterThan(0);
+  });
 });
 
 describe("preset resolution", () => {
   it("resolves a named preset and leaves custom servers unbound", () => {
     expect(resolvePreset(makeServerConfig())).toBe(PRESETS.cursor);
+    expect(resolvePreset(makeServerConfig({ preset: "antigravity" }))).toBe(
+      PRESETS.antigravity,
+    );
     expect(
       resolvePreset(makeServerConfig({ preset: "custom", command: "agent" })),
     ).toBeUndefined();
@@ -136,6 +235,9 @@ describe("preset resolution", () => {
     expect(
       resolveConfiguredCommand(makeServerConfig({ preset: "codex" })),
     ).toEqual(PRESETS.codex.command);
+    expect(
+      resolveConfiguredCommand(makeServerConfig({ preset: "antigravity" })),
+    ).toEqual(PRESETS.antigravity.command);
   });
 
   it("allows command and argument overrides independently", () => {

@@ -141,6 +141,25 @@ describe("serverConfigSchema", () => {
       serverConfigSchema.safeParse({ preset: "cursor", maxTurns }).success,
     ).toBe(false);
   });
+
+  it("accepts the antigravity preset with standard defaults", () => {
+    const options = parsePluginOptions({
+      servers: { antigravity: { preset: "antigravity" } },
+    });
+
+    expect(options.servers.antigravity).toEqual({
+      preset: "antigravity",
+      enabled: true,
+      authProfile: "default",
+      env: {},
+      forwardEnv: [],
+      models: {},
+      defaultModel: "default",
+      config: {},
+      mcpServers: [],
+      skills: "native",
+    });
+  });
 });
 
 describe("model and MCP schemas", () => {

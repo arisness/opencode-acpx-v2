@@ -117,6 +117,61 @@ describe("diagnosePreset", () => {
       }),
     ]);
   });
+
+  it("validates Antigravity capabilities, auth methods and MCP mismatch", () => {
+    expect(
+      diagnosePreset(PRESETS.antigravity, {
+        command: { status: "missing" },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        code: "ACP_EXECUTABLE_MISSING",
+        level: "fatal",
+        remediation: PRESETS.antigravity.installHint,
+      }),
+    ]);
+
+    expect(
+      diagnosePreset(PRESETS.antigravity, {
+        initialise: {
+          status: "ok",
+          protocolVersion: 1,
+          capabilityPaths: PRESETS.antigravity.capabilities.requiredPaths,
+        },
+      }),
+    ).toEqual([]);
+
+    expect(
+      diagnosePreset(PRESETS.antigravity, {
+        initialise: {
+          status: "ok",
+          protocolVersion: 1,
+          capabilityPaths: ["agentCapabilities.loadSession"],
+        },
+        requestedMcpServerCount: 1,
+      }).map(({ code }) => code),
+    ).toEqual(["ACP_RUNTIME_FEATURE_MISSING", "ACP_MCP_CAPABILITY_MISMATCH"]);
+
+    expect(
+      diagnosePreset(PRESETS.antigravity, {
+        auth: {
+          status: "required",
+          methodIds: PRESETS.antigravity.auth.methodIds,
+        },
+      })[0],
+    ).toMatchObject({
+      code: "ACP_AUTH_REQUIRED",
+      level: "action",
+      details: {
+        methodIds: [
+          "agent-platform",
+          "gemini-api-key",
+          "oauth-business",
+          "oauth-personal",
+        ],
+      },
+    });
+  });
 });
 
 describe("summariseDiagnostics", () => {

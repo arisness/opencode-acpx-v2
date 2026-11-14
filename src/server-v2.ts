@@ -342,5 +342,6 @@ function serverTitle(serverId: string, server: ServerConfig): string {
   if (server.preset === "codex") return "Codex";
   if (server.preset === "grok-build") return "Grok Build";
   if (server.preset === "hermes") return "Hermes";
+  if (server.preset === "antigravity") return "Antigravity";
   return serverId;
 }

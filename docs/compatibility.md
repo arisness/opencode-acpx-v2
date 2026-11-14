@@ -106,6 +106,22 @@ sandboxing or workflow remain separate session controls.
 - The current agent accepts session MCP servers without advertising MCP
   capabilities; this is reported as a compatibility warning.
 
+### Antigravity
+
+- Command: `agy acp` (tested against `1.5.7`; profile process isolation).
+- Dynamic `model`, `mode` and `thought_level` config options alongside legacy
+  model/mode state; `thought_level` options (including model-specific `xhigh`
+  where advertised) map to OpenCode variants.
+- Image and embedded-context prompts; audio is unsupported.
+- Session lifecycle supports `load`, `list`, `resume`, `close` and
+  `additionalDirectories`; `fork` and `delete` are unsupported.
+- Native Antigravity customizations and skills in `.agents/skills`,
+  `.gemini/skills` and `~/.gemini/skills` remain active, though ACP does not
+  guarantee a complete skill catalogue.
+- `initialize` omits `mcpCapabilities`, while `session/new` accepts session
+  `mcpServers`; this is flagged as a compatibility warning when session MCP
+  servers are configured.
+
 ## Honest limits
 
 - Agent features not exposed through ACP or a known extension cannot be shown

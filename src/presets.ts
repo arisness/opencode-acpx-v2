@@ -688,6 +688,124 @@ export const PRESETS: Record<Exclude<PresetId, "custom">, Preset> = {
       ],
     },
   },
+  antigravity: {
+    id: "antigravity",
+    title: "Antigravity",
+    command: { command: "agy", args: ["acp"] },
+    fallbacks: [],
+    processIsolation: "profile",
+    supportsLegacyModels: true,
+    nativeSkillRoots: [".agents/skills", ".gemini/skills", "~/.gemini/skills"],
+    installHint:
+      "Install Antigravity CLI (`agy`) and authenticate with `agy acp --login` or configure `GEMINI_API_KEY`.",
+    version: {
+      kind: "system-feature-probe",
+      testedVersion: "1.5.7",
+      probe: { command: "agy", args: ["--version"] },
+      featureProbes: [{ command: "agy", args: ["acp", "--help"] }],
+    },
+    discovery: {
+      models: [{ kind: "config-option", id: "model" }, legacyModels],
+      modes: [{ kind: "config-option", id: "mode" }, legacyModes],
+      commands: [availableCommands],
+      skills: [
+        availableCommands,
+        {
+          kind: "agent-native",
+          detail:
+            "Antigravity customizations and skills are loaded natively; ACP does not guarantee a complete catalogue.",
+        },
+      ],
+      preserveOpaqueIds: true,
+    },
+    controls: {
+      model: [{ kind: "config-option", id: "model" }, legacyModelControl],
+      mode: [{ kind: "config-option", id: "mode" }, standardModeControl],
+      config: [
+        { kind: "config-option", id: "model" },
+        { kind: "config-option", id: "mode" },
+        { kind: "config-option", id: "thought_level" },
+      ],
+    },
+    auth: {
+      ownership: "agent-native",
+      methodIds: [
+        "oauth-personal",
+        "oauth-business",
+        "gemini-api-key",
+        "agent-platform",
+      ],
+      dynamicMethods: false,
+      preflight: [],
+      recognisedEnvironment: [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+      ],
+      secretEnvironment: [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+      ],
+    },
+    capabilities: {
+      protocolVersion: 1,
+      prompt: {
+        image: "required",
+        audio: "unsupported",
+        embeddedContext: "required",
+      },
+      mcp: {
+        stdio: "unsupported",
+        http: "unsupported",
+        sse: "unsupported",
+      },
+      sessions: {
+        load: "required",
+        list: "required",
+        resume: "required",
+        fork: "unsupported",
+        close: "required",
+        delete: "unsupported",
+        additionalDirectories: "required",
+      },
+      requiredPaths: [
+        "agentCapabilities.loadSession",
+        "agentCapabilities.promptCapabilities.image",
+        "agentCapabilities.promptCapabilities.embeddedContext",
+        "agentCapabilities.sessionCapabilities.list",
+        "agentCapabilities.sessionCapabilities.resume",
+        "agentCapabilities.sessionCapabilities.close",
+        "agentCapabilities.sessionCapabilities.additionalDirectories",
+      ],
+      optionalPaths: [
+        "_meta.antigravity.tier",
+        "_meta.antigravity.systemPrompt.append",
+        "agentCapabilities.auth.logout",
+      ],
+      requiredClientPaths: [],
+    },
+    extensions: {
+      clientToAgent: [],
+      agentToClient: [],
+      unknownReverseMethods: "route-to-plugin",
+    },
+    mcp: {
+      nativeConfig: ["Antigravity ACP native MCP configuration"],
+      sessionServers: "merge-and-dedupe",
+      knownAdvertisementMismatch: true,
+    },
+    diagnostics: {
+      nativeChecks: [{ command: "agy", args: ["acp", "--help"] }],
+      requiredInitialiseMetadata: [],
+      knownLimitations: [
+        "Antigravity accepts session MCP servers on session/new while initialize omits mcpCapabilities.",
+        "Antigravity does not advertise session/fork or session/delete capabilities.",
+      ],
+    },
+  },
 };
 
 export function resolvePreset(server: ServerConfig): Preset | undefined {

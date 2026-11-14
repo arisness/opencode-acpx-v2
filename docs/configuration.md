@@ -53,26 +53,26 @@ At least one server is required.
 
 ## Server options
 
-| Option               | Default           | Meaning                                                         |
-| -------------------- | ----------------- | --------------------------------------------------------------- |
-| `preset`             | required          | `cursor`, `claude`, `codex`, `grok-build`, `hermes` or `custom` |
-| `enabled`            | `true`            | Include the provider                                            |
-| `command` / `args`   | preset            | Override the ACP executable and argv                            |
-| `cwd`                | OpenCode worktree | Explicit process working directory                              |
-| `authProfile`        | `default`         | Non-secret identity used for isolation/session fingerprints     |
-| `env`                | `{}`              | Literal worker-side environment values                          |
-| `forwardEnv`         | `[]`              | Named host variables allowed to enter the worker/session        |
-| `models`             | `{}`              | Explicit fallback/override OpenCode catalogue                   |
-| `defaultModel`       | `default`         | Synthetic or configured default model ID                        |
-| `mode`               | unset             | Initial ACP mode ID                                             |
-| `config`             | `{}`              | Initial ACP config-option values                                |
-| `mcpServers`         | `[]`              | Additional session MCP servers                                  |
-| `nativeSystemPrompt` | unset             | Replace the agent-native prompt where supported                 |
-| `appendSystemPrompt` | unset             | Append instructions where supported                             |
-| `allowedTools`       | preset/agent      | Acpx session option; never a substitute for permission policy   |
-| `maxTurns`           | preset/agent      | Agent turn limit where supported                                |
-| `processIsolation`   | preset            | `session` or `profile`                                          |
-| `skills`             | `native`          | `native`, `shared-standard` or `mirror-known-roots`             |
+| Option               | Default           | Meaning                                                                        |
+| -------------------- | ----------------- | ------------------------------------------------------------------------------ |
+| `preset`             | required          | `cursor`, `claude`, `codex`, `grok-build`, `hermes`, `antigravity` or `custom` |
+| `enabled`            | `true`            | Include the provider                                                           |
+| `command` / `args`   | preset            | Override the ACP executable and argv                                           |
+| `cwd`                | OpenCode worktree | Explicit process working directory                                             |
+| `authProfile`        | `default`         | Non-secret identity used for isolation/session fingerprints                    |
+| `env`                | `{}`              | Literal worker-side environment values                                         |
+| `forwardEnv`         | `[]`              | Named host variables allowed to enter the worker/session                       |
+| `models`             | `{}`              | Explicit fallback/override OpenCode catalogue                                  |
+| `defaultModel`       | `default`         | Synthetic or configured default model ID                                       |
+| `mode`               | unset             | Initial ACP mode ID                                                            |
+| `config`             | `{}`              | Initial ACP config-option values                                               |
+| `mcpServers`         | `[]`              | Additional session MCP servers                                                 |
+| `nativeSystemPrompt` | unset             | Replace the agent-native prompt where supported                                |
+| `appendSystemPrompt` | unset             | Append instructions where supported                                            |
+| `allowedTools`       | preset/agent      | Acpx session option; never a substitute for permission policy                  |
+| `maxTurns`           | preset/agent      | Agent turn limit where supported                                               |
+| `processIsolation`   | preset            | `session` or `profile`                                                         |
+| `skills`             | `native`          | `native`, `shared-standard` or `mirror-known-roots`                            |
 
 Do not use `nativeSystemPrompt` and `appendSystemPrompt` interchangeably. Some
 agents can only apply system prompt metadata when creating a fresh session;
@@ -304,6 +304,23 @@ The preset runs `grok agent --no-leader stdio`. It never adds
 Hermes owns its provider credentials. Run `hermes acp --setup` separately when
 needed. Set `HERMES_ACP_SKIP_CONFIGURED_MCP=1` only if the plugin is deliberately
 supplying the complete MCP inventory.
+
+### Antigravity
+
+```jsonc
+{
+  "preset": "antigravity",
+  "forwardEnv": ["GEMINI_API_KEY"],
+  "config": {
+    "thought_level": "high",
+  },
+}
+```
+
+The preset runs `agy acp`. Authenticate separately with `agy acp --login` or
+forward `GEMINI_API_KEY` (or Google Cloud credentials such as
+`GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` or
+`GOOGLE_APPLICATION_CREDENTIALS`).
 
 ### Custom server
 
