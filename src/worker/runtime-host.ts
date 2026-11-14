@@ -20,6 +20,13 @@ import {
 import type { CreateElicitationResponse } from "@agentclientprotocol/sdk";
 
 import {
+  DEFAULT_CATALOGUE_MODEL_PROBE_BUDGET_MS,
+  DEFAULT_CATALOGUE_MODEL_PROBE_CAP,
+  EXPLICIT_CATALOGUE_MODEL_PROBE_CAP,
+  hasModelConfigControl,
+  isModelConfigControl,
+} from "../catalogue-probe.js";
+import {
   expandHome,
   type PluginOptions,
   type ServerConfig,
@@ -886,36 +893,38 @@ export class RuntimeHost {
     requestedModelIds: string[] | undefined,
   ): Promise<Record<string, unknown[]>> {
     const snapshots: Record<string, unknown[]> = {};
-    const modelControl = catalogue.configOptions.some(
-      (option) =>
-        isRecord(option) &&
-        (option.category === "model" || option.id === "model"),
-    );
     if (
-      !modelControl ||
+      !hasModelConfigControl(catalogue.configOptions) ||
       entry.runtime.setConfigOption === undefined ||
       entry.runtime.getStatus === undefined
     ) {
       return snapshots;
     }
-    const requested = new Set(
-      requestedModelIds ??
-        (catalogue.currentModelId === undefined
-          ? []
-          : [catalogue.currentModelId]),
+    const candidates = selectProbeCandidates(
+      catalogue.models,
+      catalogue.currentModelId,
+      requestedModelIds,
     );
-    for (const model of catalogue.models
-      .filter((candidate) => requested.has(candidate.id))
-      .slice(0, 128)) {
+    const enforceBudget = requestedModelIds === undefined;
+    const probeStartedAt = this.#now();
+    for (const model of candidates) {
+      if (model.id === catalogue.currentModelId) {
+        snapshots[model.id] = structuredClone(catalogue.configOptions);
+        continue;
+      }
+      if (
+        enforceBudget &&
+        this.#now() - probeStartedAt >= DEFAULT_CATALOGUE_MODEL_PROBE_BUDGET_MS
+      ) {
+        break;
+      }
       try {
-        if (model.id !== catalogue.currentModelId) {
-          await setRuntimeConfigOption(
-            entry.runtime,
-            handleEntry.handle,
-            "model",
-            model.id,
-          );
-        }
+        await setRuntimeConfigOption(
+          entry.runtime,
+          handleEntry.handle,
+          "model",
+          model.id,
+        );
         const status = await entry.runtime.getStatus({
           handle: handleEntry.handle,
         });
@@ -1614,16 +1623,41 @@ function extractCatalogue(
   };
 }
 
+function selectProbeCandidates(
+  models: CatalogueModel[],
+  currentModelId: string | undefined,
+  requestedModelIds: string[] | undefined,
+): CatalogueModel[] {
+  const requested =
+    requestedModelIds === undefined ? undefined : new Set(requestedModelIds);
+  const filtered =
+    requested === undefined
+      ? models
+      : models.filter((candidate) => requested.has(candidate.id));
+  const cap =
+    requested === undefined
+      ? DEFAULT_CATALOGUE_MODEL_PROBE_CAP
+      : EXPLICIT_CATALOGUE_MODEL_PROBE_CAP;
+  const current =
+    currentModelId === undefined
+      ? undefined
+      : filtered.find((candidate) => candidate.id === currentModelId);
+  const ordered =
+    current === undefined
+      ? filtered
+      : [
+          current,
+          ...filtered.filter((candidate) => candidate.id !== current.id),
+        ];
+  return ordered.slice(0, cap);
+}
+
 function modelNamesFromConfigOptions(
   configOptions: unknown[],
 ): Map<string, string> {
   const names = new Map<string, string>();
   for (const option of configOptions) {
-    if (
-      !isRecord(option) ||
-      (option.category !== "model" && option.id !== "model")
-    )
-      continue;
+    if (!isModelConfigControl(option)) continue;
     const choices = Array.isArray(option.options) ? option.options : [];
     for (const choice of choices) {
       if (!isRecord(choice)) continue;

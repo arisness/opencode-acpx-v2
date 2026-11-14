@@ -14,11 +14,16 @@ import {
 
 import {
   parsePluginOptions,
+  serverWorkingDirectory,
   type ConfiguredModel,
   type PluginOptions as AcpxPluginOptions,
   type ServerConfig,
 } from "./config.js";
 import { CatalogueCache } from "./catalogue-cache.js";
+import {
+  mergeCatalogueModelConfigOptions,
+  withTimeout,
+} from "./catalogue-probe.js";
 import {
   projectAcpModels,
   providerSelectionOptions,
@@ -484,18 +489,22 @@ async function refreshTargetedCatalogues(
           options.discoveryTimeoutMs,
         );
         if (!isCatalogueResult(result, serverId)) return;
-        catalogues.set(serverId, result);
+        const merged = mergeCatalogueModelConfigOptions(
+          catalogues.get(serverId),
+          result,
+        );
+        catalogues.set(serverId, merged);
         await catalogueCache
           .put(
             serverId,
             server,
             serverWorkingDirectory(server, directory),
-            result,
+            merged,
           )
           .catch(() => undefined);
         projections.set(
           serverId,
-          buildProviderProjection(serverId, server, result),
+          buildProviderProjection(serverId, server, merged),
         );
       } catch {
         return;
@@ -528,8 +537,13 @@ export function buildProviderProjection(
     modelConfigOptions: catalogue?.modelConfigOptions ?? {},
     configuredDefaults: server.config,
   });
+  const defaultProjected =
+    (catalogue?.currentModelId === undefined
+      ? undefined
+      : projected.find((model) => model.id === catalogue.currentModelId)) ??
+    projected[0];
   const baselineConfig =
-    projected[0]?.selection.config ??
+    defaultProjected?.selection.config ??
     Object.fromEntries(
       Object.entries(server.config).map(([key, value]) => [key, value]),
     );
@@ -539,15 +553,20 @@ export function buildProviderProjection(
       : { modelId: catalogue.currentModelId }),
     config: baselineConfig,
   };
+  const defaultVariants = mergeConfiguredVariants(
+    defaultSelection,
+    defaultProjected?.variants ?? {},
+    server.models.default,
+  );
   const models: Record<string, ProviderModelConfig> = {
     default: modelConfig(
-      "Default",
+      server.models.default?.name ?? "Default",
       server.models.default,
       defaultSelection,
-      {},
+      defaultVariants,
     ),
   };
-  routes.set(modelRouteKey("default"), defaultSelection);
+  registerModelRoutes(routes, "default", defaultSelection, defaultVariants);
   for (const model of projected) {
     if (model.id.length === 0 || model.id === "default") continue;
     const configured = server.models[model.id];
@@ -557,19 +576,17 @@ export function buildProviderProjection(
       configured,
     );
     models[model.id] = modelConfig(
-      model.name ?? model.id,
+      configured?.name ?? model.name ?? model.id,
       configured,
       model.selection,
       variants,
     );
-    routes.set(modelRouteKey(model.id), model.selection);
-    for (const [variantId, variant] of Object.entries(variants)) {
-      routes.set(modelRouteKey(model.id, variantId), variant.selection);
-    }
+    registerModelRoutes(routes, model.id, model.selection, variants);
   }
   for (const [modelId, configured] of Object.entries(server.models)) {
+    if (modelId === "default" || models[modelId] !== undefined) continue;
     const baseSelection = routes.get(modelRouteKey(modelId)) ?? {
-      ...(modelId === "default" ? {} : { modelId }),
+      modelId,
       config: { ...server.config },
     };
     const variants = mergeConfiguredVariants(baseSelection, {}, configured);
@@ -579,10 +596,7 @@ export function buildProviderProjection(
       baseSelection,
       variants,
     );
-    routes.set(modelRouteKey(modelId), baseSelection);
-    for (const [variantId, variant] of Object.entries(variants)) {
-      routes.set(modelRouteKey(modelId, variantId), variant.selection);
-    }
+    registerModelRoutes(routes, modelId, baseSelection, variants);
   }
   if (
     server.defaultModel !== "default" &&
@@ -882,6 +896,18 @@ function mergeConfiguredVariants(
   return result;
 }
 
+function registerModelRoutes(
+  routes: Map<string, AcpModelSelection>,
+  modelId: string,
+  selection: AcpModelSelection,
+  variants: Record<string, { selection: AcpModelSelection }>,
+): void {
+  routes.set(modelRouteKey(modelId), selection);
+  for (const [variantId, variant] of Object.entries(variants)) {
+    routes.set(modelRouteKey(modelId, variantId), variant.selection);
+  }
+}
+
 function modelRouteKey(modelId: string, variantId?: string): string {
   return `${modelId}\u0000${variantId ?? ""}`;
 }
@@ -943,13 +969,6 @@ function expandModelFilter(
   );
 }
 
-function serverWorkingDirectory(
-  server: ServerConfig,
-  fallback: string,
-): string {
-  return server.cwd === undefined ? fallback : resolve(fallback, server.cwd);
-}
-
 function commandNameSegment(value: string): string {
   return value
     .toLowerCase()
@@ -981,24 +1000,6 @@ function logDiagnostic(
       query: { directory: input.directory },
     })
     .catch(() => undefined);
-}
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new Error("ACP catalogue discovery timed out")),
-      timeoutMs,
-    );
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
 }
 
 const serverModule = {

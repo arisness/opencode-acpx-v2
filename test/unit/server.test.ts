@@ -6,11 +6,18 @@ import { join, resolve } from "node:path";
 import type { Config, PluginInput } from "@opencode-ai/plugin";
 import { describe, expect, it, vi } from "vitest";
 
-import { createServerPlugin } from "../../src/server.js";
+import {
+  buildProviderProjection,
+  createServerPlugin,
+} from "../../src/server.js";
 import { parsePluginOptions } from "../../src/config.js";
 import { createSessionKey } from "../../src/session/identity.js";
 import type { WorkerClient } from "../../src/worker/client.js";
-import type { RuntimeWorkerEvent } from "../../src/worker/messages.js";
+import type {
+  CatalogueParams,
+  CatalogueResult,
+  RuntimeWorkerEvent,
+} from "../../src/worker/messages.js";
 
 const TEST_DIRECTORY = process.cwd();
 
@@ -18,22 +25,26 @@ function fakeWorker() {
   let listener: ((event: RuntimeWorkerEvent) => void) | undefined;
   return {
     configure: vi.fn(async () => {}),
-    catalogue: vi.fn(async ({ serverId }: { serverId: string }) => ({
-      serverId,
-      cwd: TEST_DIRECTORY,
-      models: [
-        { id: "composer", name: "Composer" },
-        {
-          id: "grok-4.6[effort=high,fast=true]",
-          name: "Grok 4.6",
-        },
-      ],
-      configOptions: [],
-      modelConfigOptions: {},
-      availableCommands: [{ name: "review", description: "Review the change" }],
-      runtimeCapabilities: { controls: [] },
-      featureSupport: {},
-    })),
+    catalogue: vi.fn(
+      async ({ serverId }: CatalogueParams): Promise<CatalogueResult> => ({
+        serverId,
+        cwd: TEST_DIRECTORY,
+        models: [
+          { id: "composer", name: "Composer" },
+          {
+            id: "grok-4.6[effort=high,fast=true]",
+            name: "Grok 4.6",
+          },
+        ],
+        configOptions: [],
+        modelConfigOptions: {},
+        availableCommands: [
+          { name: "review", description: "Review the change" },
+        ],
+        runtimeCapabilities: { controls: [] },
+        featureSupport: {} as CatalogueResult["featureSupport"],
+      }),
+    ),
     request: vi.fn(async () => ({ ok: true })),
     respondElicitation: vi.fn(async () => ({ ok: true })),
     respondExtension: vi.fn(async () => ({ ok: true })),
@@ -520,6 +531,116 @@ describe("server plugin", () => {
         },
       },
     });
+    await hooks.dispose?.();
+  });
+
+  it("inherits currentModelId variants on default and merges targeted modelConfigOptions", async () => {
+    const serverConfig = parsePluginOptions({
+      servers: {
+        cursor: {
+          ...options().servers.cursor,
+          models: {
+            beta: {
+              name: "Beta Custom",
+              reasoning: true,
+              attachments: true,
+              context: 20,
+              output: 10,
+              options: {},
+              variants: {},
+            },
+          },
+        },
+      },
+    }).servers.cursor;
+    if (serverConfig === undefined) {
+      throw new Error("missing cursor server fixture");
+    }
+    const thoughtOption = (values: string[]) => [
+      { id: "model", category: "model", currentValue: "beta", options: [] },
+      {
+        id: "thought_level",
+        category: "thought_level",
+        type: "select",
+        currentValue: values[0],
+        options: values.map((value) => ({ value, name: value })),
+      },
+    ];
+    const projection = buildProviderProjection("cursor", serverConfig, {
+      serverId: "cursor",
+      cwd: TEST_DIRECTORY,
+      currentModelId: "beta",
+      models: [
+        { id: "alpha", name: "Alpha" },
+        { id: "beta", name: "Beta" },
+      ],
+      configOptions: thoughtOption(["medium", "xhigh"]),
+      modelConfigOptions: {
+        alpha: thoughtOption(["low", "high"]),
+        beta: thoughtOption(["medium", "xhigh"]),
+      },
+      availableCommands: [],
+      runtimeCapabilities: { controls: [] },
+      featureSupport: {} as never,
+    });
+
+    expect(Object.keys(projection.models.default?.variants ?? {})).toEqual([
+      "medium",
+      "xhigh",
+    ]);
+    expect(projection.routes.get("default\u0000xhigh")).toEqual({
+      modelId: "beta",
+      config: { thought_level: "xhigh" },
+    });
+    expect(Object.keys(projection.models.beta?.variants ?? {})).toEqual([
+      "medium",
+      "xhigh",
+    ]);
+
+    const worker = fakeWorker();
+    worker.catalogue.mockImplementation(
+      async ({
+        serverId,
+        modelIds,
+      }: CatalogueParams): Promise<CatalogueResult> => ({
+        serverId,
+        cwd: TEST_DIRECTORY,
+        currentModelId: "beta",
+        models: [
+          { id: "alpha", name: "Alpha" },
+          { id: "beta", name: "Beta" },
+        ],
+        configOptions: thoughtOption(["medium", "xhigh"]),
+        modelConfigOptions:
+          modelIds === undefined
+            ? { beta: thoughtOption(["medium", "xhigh"]) }
+            : { alpha: thoughtOption(["low", "high"]) },
+        availableCommands: [],
+        runtimeCapabilities: { controls: [] },
+        featureSupport: {} as CatalogueResult["featureSupport"],
+      }),
+    );
+    const plugin = createServerPlugin({
+      createWorkerClient: () => worker as unknown as WorkerClient,
+      pluginInstanceId: () => "instance-merge-targeted",
+    });
+    const hooks = await plugin(pluginInput(), options());
+    const config: Config = {
+      provider: {
+        "acp.cursor": { whitelist: ["alpha", "beta"] },
+      },
+    };
+
+    await hooks.config?.(config);
+
+    const alphaModel = config.provider?.["acp.cursor"]?.models?.alpha as
+      | { variants?: Record<string, unknown> }
+      | undefined;
+    const betaModel = config.provider?.["acp.cursor"]?.models?.beta as
+      | { variants?: Record<string, unknown> }
+      | undefined;
+    expect(Object.keys(alphaModel?.variants ?? {})).toEqual(["low", "high"]);
+    expect(Object.keys(betaModel?.variants ?? {})).toEqual(["medium", "xhigh"]);
     await hooks.dispose?.();
   });
 });

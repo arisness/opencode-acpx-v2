@@ -675,4 +675,100 @@ describe("RuntimeHost", () => {
     ).toHaveLength(0);
     await host.dispose();
   });
+
+  it("probes per-model configOptions across discovered models and respects time budget", async () => {
+    let clock = 0;
+    let advancePerSwitch = 0;
+    const fake = fakeRuntime();
+    let activeModel = "alpha";
+    const statusFor = (modelId: string) => {
+      const thoughtOptions =
+        modelId === "beta"
+          ? [
+              { value: "medium", name: "Medium" },
+              { value: "xhigh", name: "Extra" },
+            ]
+          : [
+              { value: "low", name: "Low" },
+              { value: "high", name: "High" },
+            ];
+      return {
+        models: {
+          currentModelId: "alpha",
+          availableModelIds: ["alpha", "beta", "gamma"],
+        },
+        availableCommands: [],
+        details: {
+          configOptions: [
+            {
+              id: "model",
+              category: "model",
+              currentValue: modelId,
+              options: [
+                { value: "alpha", name: "Alpha" },
+                { value: "beta", name: "Beta" },
+                { value: "gamma", name: "Gamma" },
+              ],
+            },
+            {
+              id: "thought_level",
+              category: "thought_level",
+              currentValue: thoughtOptions[0]?.value,
+              options: thoughtOptions,
+            },
+          ],
+        },
+      };
+    };
+    const getStatusSpy = vi.fn(() => Promise.resolve(statusFor(activeModel)));
+    const setConfigOptionSpy = vi.fn(
+      ({ key, value }: { key: string; value: string | boolean }) => {
+        if (key === "model" && typeof value === "string") {
+          activeModel = value;
+          clock += advancePerSwitch;
+        }
+        return Promise.resolve();
+      },
+    );
+    fake.runtime.getStatus = getStatusSpy;
+    fake.runtime.setConfigOption = setConfigOptionSpy;
+
+    const host = new RuntimeHost({
+      emit: () => undefined,
+      runtimeFactory: () => fake.runtime,
+      now: () => clock,
+    });
+    await host.configure(configuration());
+
+    const full = await host.catalogue({
+      serverId: "cursor",
+      cwd: process.cwd(),
+    });
+    expect(Object.keys(full.modelConfigOptions)).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+    expect(full.modelConfigOptions.beta).toEqual(
+      statusFor("beta").details.configOptions,
+    );
+    expect(setConfigOptionSpy).toHaveBeenCalledTimes(2);
+
+    advancePerSwitch = 5_000;
+    clock = 0;
+    activeModel = "alpha";
+    const budgeted = await host.catalogue({
+      serverId: "cursor",
+      cwd: process.cwd(),
+    });
+    expect(Object.keys(budgeted.modelConfigOptions)).toEqual(["alpha", "beta"]);
+
+    const targeted = await host.catalogue({
+      serverId: "cursor",
+      cwd: process.cwd(),
+      modelIds: ["gamma"],
+    });
+    expect(Object.keys(targeted.modelConfigOptions)).toEqual(["gamma"]);
+    await host.dispose();
+  });
 });

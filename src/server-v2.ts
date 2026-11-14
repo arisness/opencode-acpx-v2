@@ -13,6 +13,12 @@ import {
 import { PACKAGE_NAME, PERMISSION_TOOL_NAME } from "./constants.js";
 import { CatalogueCache } from "./catalogue-cache.js";
 import {
+  DEFAULT_CATALOGUE_MODEL_PROBE_CAP,
+  mergeCatalogueModelConfigOptions,
+  unprobedModelIds,
+  withTimeout,
+} from "./catalogue-probe.js";
+import {
   isSessionDeletedEvent,
   sessionDeletedId,
 } from "./interactions/events.js";
@@ -267,19 +273,91 @@ async function discover(
 ): Promise<Map<string, CatalogueResult>> {
   const cache = new CatalogueCache(options.stateDir);
   const result = new Map<string, CatalogueResult>();
-  for (const [serverId, server] of Object.entries(options.servers)) {
-    if (!server.enabled) continue;
-    const cwd = serverWorkingDirectory(server, directory);
-    try {
-      const catalogue = await worker.catalogue({ serverId, cwd });
-      result.set(serverId, catalogue);
-      await cache.put(serverId, server, cwd, catalogue).catch(() => undefined);
-    } catch {
-      const cached = await cache.get(serverId, server, cwd);
-      if (cached !== undefined) result.set(serverId, cached);
-    }
-  }
+  await Promise.all(
+    Object.entries(options.servers).map(async ([serverId, server]) => {
+      if (!server.enabled) return;
+      const cwd = serverWorkingDirectory(server, directory);
+      try {
+        const catalogue = await withTimeout(
+          worker.catalogue({ serverId, cwd }),
+          options.discoveryTimeoutMs,
+        );
+        result.set(serverId, catalogue);
+        await cache
+          .put(serverId, server, cwd, catalogue)
+          .catch(() => undefined);
+      } catch {
+        const cached = await cache.get(serverId, server, cwd);
+        if (cached !== undefined) result.set(serverId, cached);
+      }
+    }),
+  );
   return result;
+}
+
+async function probeRemainingModelConfigOptions(input: {
+  worker: WorkerClient;
+  options: PluginOptions;
+  directory: string;
+  catalogues: Map<string, CatalogueResult>;
+  projections: Map<string, ProviderProjection>;
+  isDisposed: () => boolean;
+  abortSignal: Promise<never>;
+  reloadProviders: () => Promise<void>;
+}): Promise<void> {
+  const cache = new CatalogueCache(input.options.stateDir);
+  const outcomes = await Promise.all(
+    Object.entries(input.options.servers).map(async ([serverId, server]) => {
+      if (!server.enabled || input.isDisposed()) return false;
+      const current = input.catalogues.get(serverId);
+      if (current === undefined) return false;
+      const missing = unprobedModelIds(current);
+      if (missing.length === 0) return false;
+      const cwd = serverWorkingDirectory(server, input.directory);
+      let serverUpdated = false;
+      for (
+        let offset = 0;
+        offset < missing.length;
+        offset += DEFAULT_CATALOGUE_MODEL_PROBE_CAP
+      ) {
+        if (input.isDisposed()) return serverUpdated;
+        const chunk = missing.slice(
+          offset,
+          offset + DEFAULT_CATALOGUE_MODEL_PROBE_CAP,
+        );
+        try {
+          const update = await Promise.race([
+            withTimeout(
+              input.worker.catalogue({ serverId, cwd, modelIds: chunk }),
+              input.options.discoveryTimeoutMs,
+            ),
+            input.abortSignal,
+          ]);
+          if (input.isDisposed()) return serverUpdated;
+          const merged = mergeCatalogueModelConfigOptions(
+            input.catalogues.get(serverId),
+            update,
+          );
+          input.catalogues.set(serverId, merged);
+          input.projections.set(
+            serverId,
+            buildProviderProjection(serverId, server, merged),
+          );
+          serverUpdated = true;
+          await Promise.race([
+            cache.put(serverId, server, cwd, merged).catch(() => undefined),
+            input.abortSignal,
+          ]);
+        } catch {
+          return serverUpdated;
+        }
+      }
+      return serverUpdated;
+    }),
+  );
+  if (outcomes.some(Boolean) && !input.isDisposed()) {
+    await input.reloadProviders().catch(() => undefined);
+  }
 }
 
 export function createOpenCode2Setup(dependencies: OpenCode2Dependencies = {}) {
@@ -322,12 +400,19 @@ export function createOpenCode2Setup(dependencies: OpenCode2Dependencies = {}) {
     const registrations: Disposable[] = [];
     const generationBySession = new Map<string, number>();
     const sessionsByOpenCodeId = new Map<string, Map<string, string>>();
+    const backgroundTasks = new Set<Promise<void>>();
+    let abortBackgroundTasks = (): void => undefined;
+    const backgroundAbortSignal = new Promise<never>((_resolve, reject) => {
+      abortBackgroundTasks = (): void => reject(new Error("disposed"));
+    });
+    backgroundAbortSignal.catch(() => undefined);
     let disposed = false;
     let cancelEvents: () => void = () => undefined;
 
     const teardown = async (): Promise<void> => {
       if (disposed) return;
       disposed = true;
+      abortBackgroundTasks();
       cancelEvents();
       unsubscribeWorker();
       for (const registration of registrations.reverse()) {
@@ -335,6 +420,7 @@ export function createOpenCode2Setup(dependencies: OpenCode2Dependencies = {}) {
       }
       for (const release of unregister.splice(0)) release();
       await worker.dispose();
+      await Promise.allSettled([...backgroundTasks]);
     };
 
     try {
@@ -447,10 +533,14 @@ export function createOpenCode2Setup(dependencies: OpenCode2Dependencies = {}) {
           const projection = projections.get(serverId);
           if (server === undefined || projection === undefined) return;
           const modelId = stringField(model, "id", "modelID") ?? "default";
-          const variantId = stringField(event, "variant");
+          const variantId =
+            stringField(model, "variant") ?? stringField(event, "variant");
+          const variantSelection =
+            variantId === undefined
+              ? undefined
+              : projection.routes.get(modelRouteKey(modelId, variantId));
           const selection =
-            projection.routes.get(modelRouteKey(modelId, variantId)) ??
-            projection.routes.get(modelRouteKey(modelId));
+            variantSelection ?? projection.routes.get(modelRouteKey(modelId));
           if (selection === undefined)
             throw new Error(
               `Unknown ACP model route ${id ?? providerId(serverId)}/${modelId}`,
@@ -495,7 +585,8 @@ export function createOpenCode2Setup(dependencies: OpenCode2Dependencies = {}) {
           if (server.mode !== undefined) output.mode = server.mode;
           output.opencodeAcpx = {
             schema: 1,
-            variantId: variantId ?? null,
+            variantId:
+              variantSelection === undefined ? null : (variantId ?? null),
             ...structuredClone(selection),
           };
         }),
@@ -603,6 +694,25 @@ export function createOpenCode2Setup(dependencies: OpenCode2Dependencies = {}) {
       }
 
       await ctx.provider.reload();
+      if (
+        [...catalogues.values()].some(
+          (catalogue) => unprobedModelIds(catalogue).length > 0,
+        )
+      ) {
+        const refreshTask = probeRemainingModelConfigOptions({
+          worker,
+          options,
+          directory,
+          catalogues,
+          projections,
+          isDisposed: () => disposed,
+          abortSignal: backgroundAbortSignal,
+          reloadProviders: () => ctx.provider.reload(),
+        }).finally(() => {
+          backgroundTasks.delete(refreshTask);
+        });
+        backgroundTasks.add(refreshTask);
+      }
       return teardown;
     } catch (error) {
       await teardown().catch(() => undefined);

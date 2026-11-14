@@ -876,4 +876,138 @@ describe("OpenCode 2 server", () => {
     expect(toolTransformDispose).toHaveBeenCalled();
     expect(toolHookDispose).toHaveBeenCalled();
   });
+
+  it("reads model.variant in session context and finishes partial per-model probes in background", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "opencode-acpx-v2-"));
+    const optionSnapshot = (values: string[]) => [
+      { id: "model", category: "model", currentValue: "alpha", options: [] },
+      {
+        id: "thought_level",
+        category: "thought_level",
+        type: "select",
+        currentValue: values[0],
+        options: values.map((value) => ({ value, name: value })),
+      },
+    ];
+    const worker = fakeWorker();
+    worker.catalogue.mockImplementation(
+      async ({
+        serverId,
+        cwd,
+        modelIds,
+      }: CatalogueParams): Promise<CatalogueResult> => ({
+        serverId,
+        cwd,
+        currentModelId: "alpha",
+        models: [
+          { id: "alpha", name: "Alpha" },
+          { id: "beta", name: "Beta" },
+        ],
+        configOptions: optionSnapshot(["low", "medium", "high"]),
+        modelConfigOptions:
+          modelIds === undefined
+            ? { alpha: optionSnapshot(["low", "medium", "high"]) }
+            : { beta: optionSnapshot(["medium", "high", "xhigh"]) },
+        availableCommands: [],
+        runtimeCapabilities: { controls: [] },
+        featureSupport: {} as CatalogueResult["featureSupport"],
+      }),
+    );
+
+    const context = fakeContext(directory);
+    const setup = createOpenCode2Setup({
+      createWorkerClient: () => worker as unknown as WorkerClient,
+      pluginInstanceId: () => "v2-variants",
+      providerUrl: new URL("file:///plugin/provider.js"),
+      workerPath: "/plugin/worker.js",
+      env: {},
+    });
+
+    const dispose = await setup(context as never);
+    await vi.waitFor(() =>
+      expect(context.provider.reload).toHaveBeenCalledTimes(2),
+    );
+
+    const providers: Record<string, unknown>[] = [];
+    context.providerTransforms[0]?.({
+      add(entry: Record<string, unknown>) {
+        providers.push(entry);
+      },
+    });
+    const registeredModels = (providers[0]?.models ?? []) as {
+      id: string;
+      variants?: { id: string }[];
+    }[];
+    expect(
+      registeredModels
+        .find((m) => m.id === "default")
+        ?.variants?.map((v) => v.id),
+    ).toEqual(["low", "medium", "high"]);
+    expect(
+      registeredModels.find((m) => m.id === "beta")?.variants?.map((v) => v.id),
+    ).toEqual(["medium", "high", "xhigh"]);
+
+    const selectedEvent: Record<string, unknown> = {
+      sessionID: "session-variant",
+      agent: "build",
+      model: {
+        providerID: "acp.cursor",
+        id: "beta",
+        modelID: "beta",
+        variant: "xhigh",
+      },
+      options: {},
+    };
+    await context.sessionHooks.get("context")?.(selectedEvent);
+    expect(selectedEvent.options).toMatchObject({
+      opencodeAcpx: {
+        schema: 1,
+        variantId: "xhigh",
+        modelId: "beta",
+        config: { thought_level: "xhigh" },
+      },
+    });
+
+    const defaultVariantEvent: Record<string, unknown> = {
+      sessionID: "session-default-variant",
+      agent: "build",
+      model: {
+        providerID: "acp.cursor",
+        id: "default",
+        variant: "high",
+      },
+      options: {},
+    };
+    await context.sessionHooks.get("context")?.(defaultVariantEvent);
+    expect(defaultVariantEvent.options).toMatchObject({
+      opencodeAcpx: {
+        schema: 1,
+        variantId: "high",
+        modelId: "alpha",
+        config: { thought_level: "high" },
+      },
+    });
+
+    const unknownVariantEvent: Record<string, unknown> = {
+      sessionID: "session-unknown-variant",
+      agent: "build",
+      model: {
+        providerID: "acp.cursor",
+        id: "alpha",
+        variant: "stale",
+      },
+      options: {},
+    };
+    await context.sessionHooks.get("context")?.(unknownVariantEvent);
+    expect(unknownVariantEvent.options).toMatchObject({
+      opencodeAcpx: {
+        schema: 1,
+        variantId: null,
+        modelId: "alpha",
+        config: { thought_level: "low" },
+      },
+    });
+
+    await dispose?.();
+  });
 });
